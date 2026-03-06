@@ -41,6 +41,13 @@ def duel_roll_kb(duel_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def duel_confirm_kb(duel_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"duel:confirm:{duel_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"duel:decline_join:{duel_id}"),
+    ]])
+
+
 def back_to_duel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="◀️ К дуэлям", callback_data="duel:menu")

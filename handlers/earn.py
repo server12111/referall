@@ -14,15 +14,36 @@ router = Router()
 @router.callback_query(lambda c: c.data == "menu:earn")
 async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{db_user.user_id}"
+
+    # Расчёт/отображение награды за реферала
+    import json
+    from database.models import BotSettings
+    rt_row = await session.get(BotSettings, "reward_type")
+    reward_type = rt_row.value if rt_row else "per_sponsor"
+    sps_row = await session.get(BotSettings, "stars_per_sponsor")
+    stars_per_sponsor = float(sps_row.value) if sps_row and sps_row.value else 0.45
+
+    if reward_type == "fixed":
+        rr_row = await session.get(BotSettings, "referral_reward")
+        reward = float(rr_row.value) if rr_row and rr_row.value else 0.0
+        reward_line = f"💰 <b>Награда за реферала: {reward} ⭐</b>"
+    else:
+        reward_line = (
+            f"💰 <b>Награда за реферала — динамическая</b>\n"
+            f"Бот назначит тебе каналы спонсоров для подписки.\n"
+            f"За каждый канал ты получишь <b>{stars_per_sponsor} ⭐</b>.\n"
+            f"Чем больше спонсоров назначит бот — тем выше твоя награда! 🚀"
+        )
+
     default_text = (
         "⭐ <b>Заработать звёзды</b>\n\n"
-        "Приглашай друзей и получай <b>Telegram Stars</b> за каждого нового участника!\n\n"
-        "💰 <b>Сколько платим:</b>\n"
-        "• За каждого реферала — <b>4–6 ⭐</b>\n"
+        "Приглашай друзей — получай <b>Telegram Stars</b> за каждого!\n\n"
+        f"{reward_line}\n\n"
+        "📌 <b>Условия:</b>\n"
+        "• Друг должен запустить бота по твоей ссылке\n"
         "• Один пользователь засчитывается только один раз\n"
-        "• Выплата мгновенная — сразу после регистрации друга\n\n"
-        "📤 <b>Как пригласить:</b>\n"
-        "Отправь ссылку другу в личку, в чат или опубликуй в социальных сетях\n\n"
+        "• Выплата — мгновенно после регистрации\n\n"
+        f"👥 Ты пригласил: <b>{db_user.referrals_count}</b> чел.\n\n"
         f"🔗 <b>Твоя реферальная ссылка:</b>\n<code>{ref_link}</code>"
     )
     await answer_with_content(callback, session, "menu:earn", default_text, back_to_menu_kb())
@@ -31,16 +52,20 @@ async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User)
 
 @router.callback_query(lambda c: c.data == "menu:referrals")
 async def cb_referrals(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+    from sqlalchemy import asc
     result = await session.execute(
-        select(User).where(User.referrer_id == db_user.user_id)
+        select(User)
+        .where(User.referrer_id == db_user.user_id, User.referral_reward_pending == False)
+        .order_by(asc(User.created_at))
     )
     refs = result.scalars().all()
 
     lines = []
-    for ref in refs[:20]:
+    for i, ref in enumerate(refs[:20], start=1):
         name = ref.first_name or "—"
-        uname = f"@{ref.username}" if ref.username else ""
-        lines.append(f"• {name} {uname}")
+        uname = f" @{ref.username}" if ref.username else ""
+        date_str = ref.created_at.strftime("%d.%m.%Y") if ref.created_at else "—"
+        lines.append(f"{i}. {name}{uname} — {date_str}")
 
     body = "\n".join(lines) if lines else "Рефералов пока нет."
     default_text = (

@@ -136,12 +136,16 @@ async def _execute_game(
             won, payout = True, round(bet * coeff, 2)
 
     elif game_type == "slots":
-        coeff1 = await _get_float(session, "game_slots_coeff1", 5.0)
-        coeff2 = await _get_float(session, "game_slots_coeff2", 2.0)
-        if 1 <= value <= 3:
-            won, payout = True, round(bet * coeff1, 2)
-        elif 4 <= value <= 10:
-            won, payout = True, round(bet * coeff2, 2)
+        # Telegram 🎰 values 1-64, formula: reel1*16 + reel2*4 + reel3 + 1
+        # Symbols: Bar=0, Grape=1, Lemon=2, Seven=3
+        # 3-of-a-kind: BAR=1, Grape=22, Lemon=43, 777=64
+        coeff_777 = await _get_float(session, "game_slots_coeff1", 3.0)    # 777 jackpot
+        coeff_fruits = await _get_float(session, "game_slots_coeff2", 2.0)  # 3 matching fruits
+        _FRUITS = {1, 22, 43}
+        if value == 64:
+            won, payout = True, round(bet * coeff_777, 2)
+        elif value in _FRUITS:
+            won, payout = True, round(bet * coeff_fruits, 2)
 
     if won:
         db_user.stars_balance += payout
@@ -174,7 +178,11 @@ def _result_text(
         "basketball": "🏀 Попадание!" if won else "🏀 Мимо.",
         "bowling":    "🎳 Страйк!" if won else "🎳 Не страйк.",
         "dice":       f"🎲 Выпало: <b>{value}</b> | {'📈 Больше 3' if dice_side == 'high' else '📉 Меньше 4'}",
-        "slots":      f"🎰 Значение: <b>{value}</b>",
+        "slots": (
+            "🎰 <b>777 — Джекпот! 🏆</b>" if value == 64
+            else ("🎰 <b>3 одинаковых — Выигрыш! 🍀</b>" if value in (1, 22, 43)
+                  else "🎰 Нет совпадений")
+        ),
     }
 
     if won:

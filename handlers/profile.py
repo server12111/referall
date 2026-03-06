@@ -48,18 +48,10 @@ async def cb_transfer_start(
     session: AsyncSession,
     db_user: User,
 ) -> None:
-    today_start = datetime.combine(date.today(), datetime.min.time())
-    refs_today = (await session.execute(
-        select(func.count(User.user_id)).where(
-            User.referrer_id == db_user.user_id,
-            User.created_at >= today_start,
-        )
-    )).scalar() or 0
-
-    if refs_today < TRANSFER_REF_REQUIRED:
+    if db_user.referrals_count < TRANSFER_REF_REQUIRED:
         await callback.answer(
-            f"❌ Для перевода нужно пригласить {TRANSFER_REF_REQUIRED} реферала сегодня.\n"
-            f"Сегодня приглашено: {refs_today}/{TRANSFER_REF_REQUIRED}",
+            f"❌ Для перевода нужно иметь {TRANSFER_REF_REQUIRED} реферала.\n"
+            f"У вас: {db_user.referrals_count}/{TRANSFER_REF_REQUIRED}",
             show_alert=True,
         )
         return
@@ -70,8 +62,8 @@ async def cb_transfer_start(
         f"💸 <b>Перевод звёзд</b>\n\n"
         f"💰 Ваш баланс: <b>{db_user.stars_balance:.2f} ⭐</b>\n\n"
         f"📋 Условия:\n"
-        f"• 3 реферала сегодня — ✅ ({refs_today}/3)\n"
-        f"• Комиссия перевода: <b>10%</b>\n\n"
+        f"• 3 реферала всего — ✅ ({db_user.referrals_count}/3)\n"
+        f"• Комиссия перевода: <b>10%</b> (вычитается из суммы)\n\n"
         f"Введи username получателя (без @):",
         back_to_menu_kb(),
     )
@@ -113,7 +105,7 @@ async def msg_transfer_username(
     await message.answer(
         f"💸 Перевод пользователю <b>{target.first_name}</b> (@{target.username})\n\n"
         f"💰 Ваш баланс: <b>{db_user.stars_balance:.2f} ⭐</b>\n"
-        f"⚠️ Комиссия 10% спишется сверх суммы.\n\n"
+        f"⚠️ Комиссия 10% вычитается из суммы (получатель получит меньше).\n\n"
         f"Введи сумму перевода:",
         parse_mode="HTML",
     )
@@ -137,12 +129,12 @@ async def msg_transfer_amount(
         return
 
     commission = round(amount * TRANSFER_COMMISSION, 2)
-    total_deduct = round(amount + commission, 2)
+    received = round(amount - commission, 2)
 
-    if db_user.stars_balance < total_deduct:
+    if db_user.stars_balance < amount:
         await message.answer(
             f"❌ Недостаточно звёзд.\n"
-            f"Нужно: <b>{total_deduct:.2f} ⭐</b> (сумма + 10% комиссия)\n"
+            f"Нужно: <b>{amount:.2f} ⭐</b>\n"
             f"Ваш баланс: <b>{db_user.stars_balance:.2f} ⭐</b>",
             parse_mode="HTML",
         )
@@ -156,13 +148,13 @@ async def msg_transfer_amount(
         await message.answer("❌ Пользователь не найден.", reply_markup=back_to_menu_kb())
         return
 
-    db_user.stars_balance -= total_deduct
-    target.stars_balance += amount
+    db_user.stars_balance -= amount
+    target.stars_balance += received
 
     transfer = Transfer(
         from_user_id=db_user.user_id,
         to_user_id=target.user_id,
-        amount=amount,
+        amount=received,
         commission=commission,
     )
     session.add(transfer)
@@ -171,7 +163,8 @@ async def msg_transfer_amount(
     await message.answer(
         f"✅ <b>Перевод выполнен!</b>\n\n"
         f"💸 Отправлено: <b>{amount:.2f} ⭐</b> → @{target.username}\n"
-        f"🏦 Комиссия: <b>{commission:.2f} ⭐</b>\n"
+        f"🏦 Комиссия (10%): <b>{commission:.2f} ⭐</b>\n"
+        f"📩 Получатель получит: <b>{received:.2f} ⭐</b>\n"
         f"💰 Ваш новый баланс: <b>{db_user.stars_balance:.2f} ⭐</b>",
         parse_mode="HTML",
         reply_markup=back_to_menu_kb(),
@@ -183,7 +176,7 @@ async def msg_transfer_amount(
             target.user_id,
             f"💸 <b>Вам перевели звёзды!</b>\n\n"
             f"От: @{db_user.username or db_user.first_name}\n"
-            f"Сумма: <b>+{amount:.2f} ⭐</b>\n"
+            f"Сумма: <b>+{received:.2f} ⭐</b>\n"
             f"💰 Ваш баланс: <b>{target.stars_balance:.2f} ⭐</b>",
             parse_mode="HTML",
         )

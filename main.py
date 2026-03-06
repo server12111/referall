@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram_sqlite_storage.sqlitestore import SQLStorage
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import ErrorEvent
 
 from config import config
@@ -38,10 +39,15 @@ async def main() -> None:
 
     @dp.errors()
     async def error_handler(event: ErrorEvent) -> None:
+        if isinstance(event.exception, TelegramForbiddenError):
+            return
         logger.error("Handler error: %s\n%s", event.exception, traceback.format_exc())
 
     for router in routers:
         dp.include_router(router)
+
+    from services.retention import retention_loop
+    asyncio.create_task(retention_loop(bot))
 
     logger.info("Bot started")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])

@@ -82,6 +82,16 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
     if message.from_user.id not in config.ADMIN_IDS:
         result = await check_botohub(message.from_user.id)
         if not result["completed"] and not result["skip"]:
+            # Cache sponsor count for referral reward calculation
+            from database.models import BotSettings
+            count_str = str(len(result["tasks"]))
+            cached = await session.get(BotSettings, "botohub_sponsors_count")
+            if cached:
+                cached.value = count_str
+            else:
+                session.add(BotSettings(key="botohub_sponsors_count", value=count_str))
+            await session.commit()
+
             await message.answer(
                 "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>",
                 reply_markup=build_botohub_wall_kb(result["tasks"]),
@@ -101,14 +111,15 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
     await grant_referral_reward_if_pending(user, session, message.bot)
 
     default_text = (
-        "👋 <b>Добро пожаловать в SrvNkStars!</b>\n\n"
-        "🌟 Зарабатывай Telegram Stars прямо здесь:\n\n"
-        "• ⭐ <b>Рефералы</b> — приглашай друзей и получай звёзды за каждого\n"
-        "• 📋 <b>Задания</b> — подписывайся на каналы и выполняй задачи\n"
-        "• 🎮 <b>Игры</b> — испытай удачу в мини-играх\n"
-        "• 🎁 <b>Бонус</b> — бесплатные звёзды каждые 24 часа\n"
-        "• 💰 <b>Вывод</b> — выводи накопленное на свой Telegram\n\n"
-        "Выбери раздел ниже 👇"
+        "👋 <b>Добро пожаловать!</b>\n\n"
+        "Здесь ты зарабатываешь настоящие <b>Telegram Stars ⭐</b>\n\n"
+        "🚀 <b>Как заработать:</b>\n"
+        "• 👥 Приглашай друзей — получай звёзды за каждого\n"
+        "• 📋 Выполняй задания — подписки на каналы\n"
+        "• 🎮 Играй в игры — умножай баланс\n"
+        "• 🎁 Забирай ежедневный бонус\n\n"
+        "💰 <b>Накопил — выводи</b> прямо на свой Telegram аккаунт!\n\n"
+        "Выбери раздел 👇"
     )
     await send_with_content(message, session, "menu:main", default_text, main_menu_kb())
 
@@ -116,14 +127,15 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
 @router.callback_query(lambda c: c.data == "menu:main")
 async def cb_main_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     default_text = (
-        "👋 <b>Главное меню</b>\n\n"
-        "🌟 Зарабатывай Telegram Stars прямо здесь:\n\n"
-        "• ⭐ <b>Рефералы</b> — приглашай друзей и получай звёзды за каждого\n"
-        "• 📋 <b>Задания</b> — подписывайся на каналы и выполняй задачи\n"
-        "• 🎮 <b>Игры</b> — испытай удачу в мини-играх\n"
-        "• 🎁 <b>Бонус</b> — бесплатные звёзды каждые 24 часа\n"
-        "• 💰 <b>Вывод</b> — выводи накопленное на свой Telegram\n\n"
-        "Выбери раздел ниже 👇"
+        "🏠 <b>Главное меню</b>\n\n"
+        "Здесь ты зарабатываешь настоящие <b>Telegram Stars ⭐</b>\n\n"
+        "🚀 <b>Как заработать:</b>\n"
+        "• 👥 Приглашай друзей — получай звёзды за каждого\n"
+        "• 📋 Выполняй задания — подписки на каналы\n"
+        "• 🎮 Играй в игры — умножай баланс\n"
+        "• 🎁 Забирай ежедневный бонус\n\n"
+        "💰 <b>Накопил — выводи</b> прямо на свой Telegram аккаунт!\n\n"
+        "Выбери раздел 👇"
     )
     await answer_with_content(callback, session, "menu:main", default_text, main_menu_kb())
     await callback.answer()

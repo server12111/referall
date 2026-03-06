@@ -14,10 +14,14 @@ def admin_main_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="💳 Начислить звёзды", callback_data="admin:credit"),
         InlineKeyboardButton(text="➖ Списать звёзды", callback_data="admin:debit"),
     )
+    builder.row(InlineKeyboardButton(text="👥 Начислить рефералов", callback_data="admin:add_referral"))
     builder.row(
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"),
         InlineKeyboardButton(text="📢 Рассылка", callback_data="admin:broadcast"),
     )
+    builder.row(InlineKeyboardButton(text="📡 Управление спонсорами", callback_data="admin:sponsors"))
+    builder.row(InlineKeyboardButton(text="🔔 Удержание", callback_data="admin:retention"))
+    builder.row(InlineKeyboardButton(text="🎟 Лотерея", callback_data="admin:lottery"))
     return builder.as_markup()
 
 
@@ -51,8 +55,8 @@ def game_detail_kb(game_type: str, is_enabled: bool) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text=toggle_text, callback_data=f"agame:toggle:{game_type}"))
     if game_type == "slots":
-        builder.row(InlineKeyboardButton(text="📈 Коэф. Tier 1 (1–3)", callback_data=f"agame:coeff1:{game_type}"))
-        builder.row(InlineKeyboardButton(text="📈 Коэф. Tier 2 (4–10)", callback_data=f"agame:coeff2:{game_type}"))
+        builder.row(InlineKeyboardButton(text="📈 Коэф. 777 (Джекпот)", callback_data=f"agame:coeff1:{game_type}"))
+        builder.row(InlineKeyboardButton(text="📈 Коэф. 3 фрукта", callback_data=f"agame:coeff2:{game_type}"))
     else:
         builder.row(InlineKeyboardButton(text="📈 Коэффициент", callback_data=f"agame:coeff:{game_type}"))
     builder.row(InlineKeyboardButton(text="💰 Мин. ставка", callback_data=f"agame:min_bet:{game_type}"))
@@ -64,12 +68,15 @@ def game_detail_kb(game_type: str, is_enabled: bool) -> InlineKeyboardMarkup:
 
 def admin_settings_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="⭐ Награда за реферала", callback_data="settings:referral_reward"))
+    builder.row(InlineKeyboardButton(text="⭐ Фикс. награда за реферала", callback_data="settings:referral_reward"))
+    builder.row(InlineKeyboardButton(text="💫 Тип награды за реферала", callback_data="settings:reward_type"))
     builder.row(InlineKeyboardButton(text="⏱ Кулдаун бонуса (часы)", callback_data="settings:bonus_cooldown"))
     builder.row(InlineKeyboardButton(text="🎁 Мин. бонус", callback_data="settings:bonus_min"))
     builder.row(InlineKeyboardButton(text="🎁 Макс. бонус", callback_data="settings:bonus_max"))
     builder.row(InlineKeyboardButton(text="📢 ID канала выплат", callback_data="settings:payments_channel_id"))
     builder.row(InlineKeyboardButton(text="🔗 Ссылка на канал выплат", callback_data="settings:payments_channel_url"))
+    builder.row(InlineKeyboardButton(text="🔄 Режим рефералов", callback_data="settings:referral_mode"))
+    builder.row(InlineKeyboardButton(text="⭐ Звёзд за спонсора", callback_data="settings:stars_per_sponsor"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:main"))
     return builder.as_markup()
 
@@ -118,6 +125,17 @@ def withdrawal_actions_kb(withdrawal_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def retention_kb(enabled: bool, days: int, bonus: float) -> InlineKeyboardMarkup:
+    toggle_text = "✅ Включено" if enabled else "❌ Выключено"
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text=toggle_text, callback_data="retention:toggle"))
+    builder.row(InlineKeyboardButton(text=f"📅 Дней неактивности: {days}", callback_data="retention:set_days"))
+    builder.row(InlineKeyboardButton(text=f"⭐ Бонус: {bonus}", callback_data="retention:set_bonus"))
+    builder.row(InlineKeyboardButton(text="✏️ Текст сообщения", callback_data="retention:set_message"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:main"))
+    return builder.as_markup()
 
 
 def admin_back_kb() -> InlineKeyboardMarkup:
@@ -177,9 +195,12 @@ BUTTON_KEYS: dict[str, str] = {
     "menu:bonus":          "🎁 Бонус",
     "menu:profile":        "👤 Профиль",
     "menu:tasks":          "📋 Задания",
-    "menu:top":            "🏆 Топ",
+    "menu:top":            "🏆 Топ (выбор категории)",
+    "top:refs":            "👥 Топ по рефералам (выбор периода)",
+    "top:stars":           "⭐ Топ по звёздам (выбор периода)",
     "menu:games":          "🎮 Игры",
     "menu:withdraw":       "💰 Вывод",
+    "menu:search":         "🔍 Найти пользователя",
     "menu:how":            "ℹ️ Как это работает",
     "withdrawal:approved": "💸 Сообщение об одобрении выплаты",
     "duel:banner":         "⚔️ Баннер дуэлей",
@@ -220,4 +241,25 @@ def button_edit_kb(button_key: str, has_photo: bool, has_text: bool) -> InlineKe
             callback_data=f"admin:btn_del_text:{button_key}",
         ))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:button_content"))
+    return builder.as_markup()
+
+
+def stats_tabs_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📅 По дням (7 дней)", callback_data="admin:stats_daily"))
+    builder.row(InlineKeyboardButton(text="🎮 По играм", callback_data="admin:stats_games"))
+    builder.row(InlineKeyboardButton(text="💰 Комиссии", callback_data="admin:stats_commissions"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:main"))
+    return builder.as_markup()
+
+
+def sponsor_list_kb(sponsors: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for i, s in enumerate(sponsors):
+        builder.row(InlineKeyboardButton(
+            text=f"🗑 {s['title']}",
+            callback_data=f"admin:del_sponsor:{i}",
+        ))
+    builder.row(InlineKeyboardButton(text="➕ Добавить спонсора", callback_data="admin:add_sponsor"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:main"))
     return builder.as_markup()

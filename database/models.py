@@ -20,6 +20,8 @@ class User(Base):
     last_bonus_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     referral_reward_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class BotSettings(Base):
@@ -131,6 +133,28 @@ class Transfer(Base):
     to_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.user_id"))
     amount: Mapped[float] = mapped_column(Float)
     commission: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Lottery(Base):
+    __tablename__ = "lotteries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active, finished
+    tickets_sold: Mapped[int] = mapped_column(Integer, default=0)
+    total_collected: Mapped[float] = mapped_column(Float, default=0.0)  # real amount (with commission)
+    prize_pool: Mapped[float] = mapped_column(Float, default=0.0)  # 70% shown to users
+    winner_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    drawn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LotteryTicket(Base):
+    __tablename__ = "lottery_tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lottery_id: Mapped[int] = mapped_column(Integer, ForeignKey("lotteries.id"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -1,4 +1,4 @@
-from handlers import start, earn, bonus, profile, promo, withdraw, tasks, top, games, admin, botohub, duel, search
+from handlers import start, earn, bonus, profile, promo, withdraw, tasks, top, games, admin, botohub, duel, search, lottery
 
 routers = [
     botohub.router,  # must be first so botohub:check is matched before other handlers
@@ -11,6 +11,7 @@ routers = [
     tasks.router,
     top.router,
     games.router,
+    lottery.router,
     duel.router,
     search.router,
     admin.router,

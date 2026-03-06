@@ -24,6 +24,7 @@ def games_menu_kb(configs: dict) -> InlineKeyboardMarkup:
                 text=f"{GAME_LABELS[game]} — от {min_bet:.0f} ⭐ | {coeff_label}",
                 callback_data=f"game:play:{game}",
             ))
+    builder.row(InlineKeyboardButton(text="🎟 Лотерея", callback_data="game:lottery"))
     builder.row(InlineKeyboardButton(text="⚔️ Дуэль", callback_data="duel:menu"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main"))
     return builder.as_markup()

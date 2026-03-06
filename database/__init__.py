@@ -9,6 +9,8 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         for stmt in [
             "ALTER TABLE users ADD COLUMN referral_reward_pending BOOLEAN NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN last_seen_at DATETIME",
+            "ALTER TABLE users ADD COLUMN last_notified_at DATETIME",
         ]:
             try:
                 await conn.execute(text(stmt))

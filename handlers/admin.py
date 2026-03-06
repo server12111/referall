@@ -1,4 +1,5 @@
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from aiogram import Router, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import date as _date
 
-from database.models import User, PromoCode, PromoUse, Withdrawal, BotSettings, Task, TaskCompletion, GameSession
+from database.models import User, PromoCode, PromoUse, Withdrawal, BotSettings, Task, TaskCompletion, GameSession, Transfer, Duel, Lottery, LotteryTicket
 from handlers.withdraw import build_withdrawal_msg
 from database.engine import set_setting, get_button_content, set_button_photo, set_button_text
 from keyboards.admin import (
@@ -17,7 +18,9 @@ from keyboards.admin import (
     task_management_kb, task_type_kb, task_list_admin_kb, task_actions_kb,
     games_list_kb, game_detail_kb,
     BUTTON_KEYS, button_content_list_kb, button_edit_kb,
+    retention_kb, stats_tabs_kb, sponsor_list_kb,
 )
+from keyboards.lottery import admin_lottery_kb, admin_lottery_pick_kb
 from config import config
 
 router = Router()
@@ -44,6 +47,11 @@ class AdminDebitStates(StatesGroup):
     amount = State()
 
 
+class AdminAddReferralStates(StatesGroup):
+    user_id = State()
+    count = State()
+
+
 class AdminSettingsStates(StatesGroup):
     referral_reward = State()
     bonus_cooldown = State()
@@ -51,6 +59,7 @@ class AdminSettingsStates(StatesGroup):
     bonus_max = State()
     payments_channel_id = State()
     payments_channel_url = State()
+    stars_per_sponsor = State()
 
 
 class AdminBroadcastStates(StatesGroup):
@@ -79,6 +88,18 @@ class AdminGameStates(StatesGroup):
 class AdminButtonContentStates(StatesGroup):
     set_photo = State()
     set_text = State()
+
+
+class AdminRetentionStates(StatesGroup):
+    set_days = State()
+    set_bonus = State()
+    set_message = State()
+
+
+class AdminSponsorStates(StatesGroup):
+    channel_id = State()
+    title = State()
+    link = State()
 
 
 
@@ -155,12 +176,146 @@ async def cb_stats(callback: CallbackQuery, session: AsyncSession) -> None:
         f"⏳ В ожидании: <b>{pending_count}</b> заявок (<b>{pending_amount:.2f} ⭐</b>)\n"
         f"✅ Выведено всего: <b>{approved_amount:.2f} ⭐</b>\n"
         f"❌ Отклонено: <b>{rejected_count}</b>\n\n"
-        f"<b>🎮 Игры</b>\n"
-        f"Всего игр: <b>{total_games}</b> | Сегодня: <b>{games_today}</b>\n"
+        f"<b>🎮 Игры (всего)</b>\n"
+        f"Всего: <b>{total_games}</b> | Сегодня: <b>{games_today}</b>\n"
         f"Побед: <b>{games_won}</b> (<b>{win_rate}%</b>)\n"
         f"Прибыль казино: <b>{profit_games:.2f} ⭐</b>",
         parse_mode="HTML",
-        reply_markup=admin_back_kb(),
+        reply_markup=stats_tabs_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:stats_daily")
+async def cb_stats_daily(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    lines = []
+    for i in range(7):
+        day = _date.today() - timedelta(days=i)
+        day_start = datetime.combine(day, datetime.min.time())
+        day_end = datetime.combine(day + timedelta(days=1), datetime.min.time())
+
+        new_users = (await session.execute(
+            select(func.count(User.user_id)).where(
+                User.created_at >= day_start, User.created_at < day_end
+            )
+        )).scalar() or 0
+        games_count = (await session.execute(
+            select(func.count(GameSession.id)).where(
+                GameSession.played_at >= day_start, GameSession.played_at < day_end
+            )
+        )).scalar() or 0
+        bets_sum = (await session.execute(
+            select(func.coalesce(func.sum(GameSession.bet), 0)).where(
+                GameSession.played_at >= day_start, GameSession.played_at < day_end
+            )
+        )).scalar() or 0.0
+        payouts_sum = (await session.execute(
+            select(func.coalesce(func.sum(GameSession.payout), 0)).where(
+                GameSession.played_at >= day_start, GameSession.played_at < day_end,
+                GameSession.result == "win",
+            )
+        )).scalar() or 0.0
+        revenue = round(bets_sum - payouts_sum, 2)
+
+        label = "Сегодня" if i == 0 else ("Вчера" if i == 1 else day.strftime("%d.%m"))
+        lines.append(f"📅 <b>{label}</b>: 👥+{new_users} | 🎮{games_count} | 💰{revenue:.1f}⭐")
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin:stats")
+    ]])
+    await callback.message.edit_text(
+        "📅 <b>Статистика по дням (7 дней)</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=back_kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:stats_games")
+async def cb_stats_games(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    game_icons = {
+        "football": "⚽", "basketball": "🏀", "bowling": "🎳", "dice": "🎲", "slots": "🎰",
+    }
+    lines = []
+    for game, icon in game_icons.items():
+        total = (await session.execute(
+            select(func.count(GameSession.id)).where(GameSession.game_type == game)
+        )).scalar() or 0
+        wins = (await session.execute(
+            select(func.count(GameSession.id)).where(
+                GameSession.game_type == game, GameSession.result == "win"
+            )
+        )).scalar() or 0
+        bets = (await session.execute(
+            select(func.coalesce(func.sum(GameSession.bet), 0)).where(GameSession.game_type == game)
+        )).scalar() or 0.0
+        payouts = (await session.execute(
+            select(func.coalesce(func.sum(GameSession.payout), 0)).where(
+                GameSession.game_type == game, GameSession.result == "win"
+            )
+        )).scalar() or 0.0
+        profit = round(bets - payouts, 2)
+        win_rate = round(wins / total * 100) if total else 0
+        lines.append(
+            f"{icon} <b>{game.capitalize()}</b>: {total} игр | {win_rate}% побед | +{profit:.2f}⭐"
+        )
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin:stats")
+    ]])
+    await callback.message.edit_text(
+        "🎮 <b>Статистика по играм</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=back_kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:stats_commissions")
+async def cb_stats_commissions(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    transfer_count = (await session.execute(select(func.count(Transfer.id)))).scalar() or 0
+    transfer_comm = (await session.execute(
+        select(func.coalesce(func.sum(Transfer.commission), 0))
+    )).scalar() or 0.0
+
+    duel_count = (await session.execute(
+        select(func.count(Duel.id)).where(Duel.status == "finished", Duel.joiner_id.isnot(None))
+    )).scalar() or 0
+    duel_bets_sum = (await session.execute(
+        select(func.coalesce(func.sum(Duel.amount), 0)).where(
+            Duel.status == "finished", Duel.joiner_id.isnot(None)
+        )
+    )).scalar() or 0.0
+    duel_comm = round(duel_bets_sum * 2 * 0.20, 2)
+
+    total_comm = round(transfer_comm + duel_comm, 2)
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin:stats")
+    ]])
+    await callback.message.edit_text(
+        f"💰 <b>Статистика комиссий</b>\n\n"
+        f"<b>💸 Переводы</b>\n"
+        f"Транзакций: <b>{transfer_count}</b>\n"
+        f"Комиссий собрано: <b>{transfer_comm:.2f} ⭐</b>\n\n"
+        f"<b>⚔️ Дуэли</b>\n"
+        f"Завершённых: <b>{duel_count}</b>\n"
+        f"Комиссий собрано: <b>{duel_comm:.2f} ⭐</b>\n\n"
+        f"<b>Итого комиссий: {total_comm:.2f} ⭐</b>",
+        parse_mode="HTML",
+        reply_markup=back_kb,
     )
     await callback.answer()
 
@@ -467,6 +622,62 @@ async def msg_debit_amount(message: Message, state: FSMContext, session: AsyncSe
     )
 
 
+# ─── Add Referrals ───────────────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "admin:add_referral")
+async def cb_add_referral(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminAddReferralStates.user_id)
+    await callback.message.edit_text("👥 Введи Telegram ID пользователя, которому начислить рефералов:")
+    await callback.answer()
+
+
+@router.message(AdminAddReferralStates.user_id)
+async def msg_add_referral_user(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        uid = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Введи числовой ID:")
+        return
+    user = await session.get(User, uid)
+    if not user:
+        await message.answer("❌ Пользователь не найден. Введи другой ID:")
+        return
+    await state.update_data(target_user_id=uid)
+    await state.set_state(AdminAddReferralStates.count)
+    await message.answer(
+        f"Пользователь: {user.first_name} (@{user.username})\n"
+        f"Текущее кол-во рефералов: <b>{user.referrals_count}</b>\n\n"
+        f"Введи количество рефералов для начисления:",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminAddReferralStates.count)
+async def msg_add_referral_count(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        count = int(message.text.strip())
+        if count <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи положительное целое число:")
+        return
+    data = await state.get_data()
+    await state.clear()
+
+    user = await session.get(User, data["target_user_id"])
+    user.referrals_count += count
+    await session.commit()
+
+    await message.answer(
+        f"✅ Начислено <b>{count}</b> рефералов пользователю {user.first_name}.\n"
+        f"Новое кол-во рефералов: <b>{user.referrals_count}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
+
+
 # ─── Settings ────────────────────────────────────────────────────────────────
 
 @router.callback_query(lambda c: c.data == "admin:settings")
@@ -480,15 +691,26 @@ async def cb_settings(callback: CallbackQuery, session: AsyncSession) -> None:
     bmax = (await session.get(BotSettings, "bonus_max"))
     pch = (await session.get(BotSettings, "payments_channel_id"))
     pch_url = (await session.get(BotSettings, "payments_channel_url"))
+    mode_row = await session.get(BotSettings, "referral_mode")
+    mode = mode_row.value if mode_row else "botohub_flyer"
+    sps_row = await session.get(BotSettings, "stars_per_sponsor")
+    stars_per_sponsor = float(sps_row.value) if sps_row and sps_row.value else 0.45
+    rt_row = await session.get(BotSettings, "reward_type")
+    reward_type = rt_row.value if rt_row else "per_sponsor"
+    mode_label = "🔵 Спонсоры" if mode == "sponsors" else "🟢 Флаер + БотоХаб"
+    rt_label = "💰 Фиксированная" if reward_type == "fixed" else "📊 За спонсоров"
 
     await callback.message.edit_text(
         f"⚙️ <b>Настройки</b>\n\n"
-        f"⭐ Награда за реферала: <b>{rr.value if rr else '?'}</b>\n"
+        f"⭐ Фикс. награда за реферала: <b>{rr.value if rr else '?'}</b>\n"
+        f"💫 Тип награды: <b>{rt_label}</b>\n"
         f"⏱ Кулдаун бонуса: <b>{bc.value if bc else '?'} ч</b>\n"
         f"🎁 Бонус мин: <b>{bmin.value if bmin else '?'}</b>\n"
         f"🎁 Бонус макс: <b>{bmax.value if bmax else '?'}</b>\n"
         f"📢 ID канала выплат: <b>{pch.value if pch and pch.value else 'не задан'}</b>\n"
-        f"🔗 Ссылка канала: <b>{pch_url.value if pch_url and pch_url.value else 'не задана'}</b>",
+        f"🔗 Ссылка канала: <b>{pch_url.value if pch_url and pch_url.value else 'не задана'}</b>\n"
+        f"🔄 Режим рефералов: <b>{mode_label}</b>\n"
+        f"⭐ Звёзд за спонсора: <b>{stars_per_sponsor}</b>",
         parse_mode="HTML",
         reply_markup=admin_settings_kb(),
     )
@@ -609,6 +831,179 @@ async def msg_set_payments_channel_url(message: Message, state: FSMContext, sess
         parse_mode="HTML",
         reply_markup=admin_main_kb(),
     )
+
+
+# ─── Settings: Referral mode toggle ─────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "settings:referral_mode")
+async def cb_settings_referral_mode(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    row = await session.get(BotSettings, "referral_mode")
+    current = row.value if row else "botohub_flyer"
+    new_mode = "sponsors" if current == "botohub_flyer" else "botohub_flyer"
+    await set_setting(session, "referral_mode", new_mode)
+    await session.commit()
+    mode_label = "🔵 Спонсоры" if new_mode == "sponsors" else "🟢 Флаер + БотоХаб"
+    await callback.answer(f"Режим изменён: {mode_label}", show_alert=True)
+    await cb_settings(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "settings:stars_per_sponsor")
+async def cb_settings_stars_per_sponsor(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    row = await session.get(BotSettings, "stars_per_sponsor")
+    current = float(row.value) if row and row.value else 0.45
+    await state.set_state(AdminSettingsStates.stars_per_sponsor)
+    await callback.message.edit_text(
+        f"⭐ Текущее значение звёзд за спонсора: <b>{current}</b>\n\n"
+        f"Введи новое значение (например: 0.45 или 1):",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminSettingsStates.stars_per_sponsor)
+async def msg_set_stars_per_sponsor(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи положительное число:")
+        return
+    await state.clear()
+    await set_setting(session, "stars_per_sponsor", str(val))
+    await session.commit()
+    await message.answer(
+        f"✅ Звёзд за спонсора: <b>{val}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
+
+
+# ─── Settings: Reward type toggle ────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "settings:reward_type")
+async def cb_settings_reward_type(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    row = await session.get(BotSettings, "reward_type")
+    current = row.value if row else "per_sponsor"
+    new_type = "fixed" if current == "per_sponsor" else "per_sponsor"
+    await set_setting(session, "reward_type", new_type)
+    await session.commit()
+    label = "💰 Фиксированная" if new_type == "fixed" else "📊 За спонсоров"
+    await callback.answer(f"Тип награды изменён: {label}", show_alert=True)
+    await cb_settings(callback, session)
+
+
+# ─── Sponsors management ──────────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "admin:sponsors")
+async def cb_sponsors(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    mode_row = await session.get(BotSettings, "referral_mode")
+    mode = mode_row.value if mode_row else "botohub_flyer"
+    mode_label = "🔵 Спонсоры" if mode == "sponsors" else "🟢 Флаер + БотоХаб"
+
+    sps_row = await session.get(BotSettings, "stars_per_sponsor")
+    stars_per_sponsor = float(sps_row.value) if sps_row and sps_row.value else 0.45
+
+    sponsors_row = await session.get(BotSettings, "sponsor_channels")
+    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
+
+    text = (
+        f"📡 <b>Управление спонсорами</b>\n\n"
+        f"Режим: <b>{mode_label}</b>\n"
+        f"Звёзд за спонсора: <b>{stars_per_sponsor}</b>\n"
+        f"Спонсоров добавлено: <b>{len(sponsors)}</b>\n\n"
+        f"Нажми на спонсора чтобы удалить его:"
+        if sponsors else
+        f"📡 <b>Управление спонсорами</b>\n\n"
+        f"Режим: <b>{mode_label}</b>\n"
+        f"Звёзд за спонсора: <b>{stars_per_sponsor}</b>\n\n"
+        f"Спонсоров пока нет. Нажми «Добавить»."
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=sponsor_list_kb(sponsors))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:add_sponsor")
+async def cb_add_sponsor(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminSponsorStates.channel_id)
+    await callback.message.edit_text(
+        "📡 <b>Добавить спонсора</b>\n\n"
+        "Введи ID или @username канала (например: <code>@mychannel</code> или <code>-1001234567890</code>):",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminSponsorStates.channel_id)
+async def msg_sponsor_channel_id(message: Message, state: FSMContext) -> None:
+    await state.update_data(channel_id=message.text.strip())
+    await state.set_state(AdminSponsorStates.title)
+    await message.answer("📛 Введи название канала (отображается в кнопке):")
+
+
+@router.message(AdminSponsorStates.title)
+async def msg_sponsor_title(message: Message, state: FSMContext) -> None:
+    await state.update_data(title=message.text.strip())
+    await state.set_state(AdminSponsorStates.link)
+    await message.answer(
+        "🔗 Введи ссылку для кнопки подписки (например: <code>https://t.me/mychannel</code>):",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminSponsorStates.link)
+async def msg_sponsor_link(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    await state.clear()
+
+    new_sponsor = {
+        "id": data["channel_id"],
+        "title": data["title"],
+        "link": message.text.strip(),
+    }
+
+    sponsors_row = await session.get(BotSettings, "sponsor_channels")
+    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
+    sponsors.append(new_sponsor)
+    await set_setting(session, "sponsor_channels", json.dumps(sponsors, ensure_ascii=False))
+    await session.commit()
+
+    await message.answer(
+        f"✅ Спонсор <b>{new_sponsor['title']}</b> добавлен!\n"
+        f"Всего спонсоров: <b>{len(sponsors)}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:del_sponsor:"))
+async def cb_del_sponsor(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    idx = int(callback.data.split(":")[2])
+    sponsors_row = await session.get(BotSettings, "sponsor_channels")
+    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
+
+    if 0 <= idx < len(sponsors):
+        removed = sponsors.pop(idx)
+        await set_setting(session, "sponsor_channels", json.dumps(sponsors, ensure_ascii=False))
+        await session.commit()
+        await callback.answer(f"Удалён: {removed['title']}", show_alert=True)
+
+    await cb_sponsors(callback, session)
 
 
 # ─── Broadcast ───────────────────────────────────────────────────────────────
@@ -1426,4 +1821,314 @@ async def cb_btn_del_text(callback: CallbackQuery, session: AsyncSession) -> Non
     await callback.answer("Текст удалён.")
     await _show_button_edit(callback, session, button_key)
 
+
+# ─── Retention ────────────────────────────────────────────────────────────────
+
+async def _show_retention(callback: CallbackQuery, session: AsyncSession) -> None:
+    enabled_row = await session.get(BotSettings, "retention_enabled")
+    days_row = await session.get(BotSettings, "retention_days")
+    bonus_row = await session.get(BotSettings, "retention_bonus")
+
+    enabled = enabled_row and enabled_row.value == "1"
+    days = int(days_row.value) if days_row else 3
+    bonus = float(bonus_row.value) if bonus_row else 1.0
+
+    await callback.message.edit_text(
+        "🔔 <b>Удержание пользователей</b>\n\n"
+        "Бот автоматически отправляет сообщение пользователям,\n"
+        "которые не заходили N дней, и начисляет бонус.\n\n"
+        "В тексте сообщения используй <code>{bonus}</code> для подстановки суммы бонуса.",
+        parse_mode="HTML",
+        reply_markup=retention_kb(enabled, days, bonus),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:retention")
+async def cb_admin_retention(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await _show_retention(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "retention:toggle")
+async def cb_retention_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    row = await session.get(BotSettings, "retention_enabled")
+    new_val = "0" if (row and row.value == "1") else "1"
+    await set_setting(session, "retention_enabled", new_val)
+    await _show_retention(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "retention:set_days")
+async def cb_retention_set_days(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminRetentionStates.set_days)
+    await callback.message.edit_text("📅 Введи количество дней неактивности (целое число, например: 3):")
+    await callback.answer()
+
+
+@router.message(AdminRetentionStates.set_days)
+async def msg_retention_days(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        days = int(message.text.strip())
+        if days < 1:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи целое число больше 0:")
+        return
+    await state.clear()
+    await set_setting(session, "retention_days", str(days))
+    await message.answer(f"✅ Дней неактивности: <b>{days}</b>", parse_mode="HTML", reply_markup=admin_main_kb())
+
+
+@router.callback_query(lambda c: c.data == "retention:set_bonus")
+async def cb_retention_set_bonus(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminRetentionStates.set_bonus)
+    await callback.message.edit_text("⭐ Введи размер бонуса (число, 0 — без бонуса):")
+    await callback.answer()
+
+
+@router.message(AdminRetentionStates.set_bonus)
+async def msg_retention_bonus(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        bonus = float(message.text.strip().replace(",", "."))
+        if bonus < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи число 0 или больше:")
+        return
+    await state.clear()
+    await set_setting(session, "retention_bonus", str(bonus))
+    await message.answer(f"✅ Бонус: <b>{bonus} ⭐</b>", parse_mode="HTML", reply_markup=admin_main_kb())
+
+
+@router.callback_query(lambda c: c.data == "retention:set_message")
+async def cb_retention_set_message(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminRetentionStates.set_message)
+    await callback.message.edit_text(
+        "✏️ Введи текст сообщения для неактивных пользователей.\n\n"
+        "Используй <code>{bonus}</code> для подстановки суммы бонуса.\n"
+        "HTML-теги поддерживаются.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminRetentionStates.set_message)
+async def msg_retention_message(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    text = message.text or ""
+    await set_setting(session, "retention_message", text)
+    await message.answer("✅ Текст сообщения сохранён.", reply_markup=admin_main_kb())
+
+
+# ─── Lottery: Admin Management ────────────────────────────────────────────────
+
+async def _show_admin_lottery(callback: CallbackQuery, session: AsyncSession) -> None:
+    lottery = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").order_by(Lottery.id.desc()).limit(1)
+    )).scalar_one_or_none()
+
+    if lottery is None:
+        last = (await session.execute(
+            select(Lottery).order_by(Lottery.id.desc()).limit(1)
+        )).scalar_one_or_none()
+        if last:
+            winner = await session.get(User, last.winner_id) if last.winner_id else None
+            winner_display = f"@{winner.username}" if (winner and winner.username) else (winner.first_name if winner else "—")
+            text = (
+                "🎟 <b>Лотерея (завершена)</b>\n\n"
+                f"🎫 Продано билетов: <b>{last.tickets_sold}</b>\n"
+                f"💰 Собрано (с комиссией): <b>{last.total_collected:.2f} ⭐</b>\n"
+                f"🏆 Призовой пул (выплачено): <b>{last.prize_pool:.2f} ⭐</b>\n"
+                f"💸 Комиссия бота: <b>{round(last.total_collected - last.prize_pool, 2):.2f} ⭐</b>\n\n"
+                f"🏆 Победитель: <b>{winner_display}</b>"
+            )
+        else:
+            text = "🎟 <b>Лотерея</b>\n\nЛотерей пока не было."
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=admin_lottery_kb(False, False))
+        await callback.answer()
+        return
+
+    participants_count = (await session.execute(
+        select(func.count(LotteryTicket.id.distinct())).where(LotteryTicket.lottery_id == lottery.id)
+    )).scalar() or 0
+
+    text = (
+        "🎟 <b>Лотерея (активна)</b>\n\n"
+        f"🎫 Продано билетов: <b>{lottery.tickets_sold}</b>\n"
+        f"👤 Участников: <b>{participants_count}</b>\n"
+        f"💰 Собрано (с комиссией): <b>{lottery.total_collected:.2f} ⭐</b>\n"
+        f"🏆 Призовой пул (70%): <b>{lottery.prize_pool:.2f} ⭐</b>\n"
+        f"💸 Комиссия бота: <b>{round(lottery.total_collected - lottery.prize_pool, 2):.2f} ⭐</b>"
+    )
+    await callback.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=admin_lottery_kb(True, participants_count > 0),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:lottery")
+async def cb_admin_lottery(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await _show_admin_lottery(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "admin:lottery_new")
+async def cb_admin_lottery_new(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    existing = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").limit(1)
+    )).scalar_one_or_none()
+    if existing:
+        await callback.answer("Активная лотерея уже существует!", show_alert=True)
+        return
+
+    session.add(Lottery())
+    await session.commit()
+    await callback.answer("✅ Новая лотерея запущена!")
+    await _show_admin_lottery(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "admin:lottery_cancel")
+async def cb_admin_lottery_cancel(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    lottery = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").limit(1)
+    )).scalar_one_or_none()
+    if not lottery:
+        await callback.answer("Активной лотереи нет.", show_alert=True)
+        return
+
+    # Refund all tickets
+    tickets = (await session.execute(
+        select(LotteryTicket).where(LotteryTicket.lottery_id == lottery.id)
+    )).scalars().all()
+    for ticket in tickets:
+        user = await session.get(User, ticket.user_id)
+        if user:
+            user.stars_balance = round(user.stars_balance + 5.0, 2)
+
+    lottery.status = "finished"
+    lottery.drawn_at = datetime.utcnow()
+    await session.commit()
+
+    await callback.answer("Лотерея отменена. Все билеты возвращены.", show_alert=True)
+    await _show_admin_lottery(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "admin:lottery_random")
+async def cb_admin_lottery_random(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    lottery = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").limit(1)
+    )).scalar_one_or_none()
+    if not lottery or lottery.tickets_sold == 0:
+        await callback.answer("Нет активной лотереи или нет билетов.", show_alert=True)
+        return
+
+    import random
+    tickets = (await session.execute(
+        select(LotteryTicket).where(LotteryTicket.lottery_id == lottery.id)
+    )).scalars().all()
+    winning_ticket = random.choice(tickets)
+    await _finish_lottery(lottery, winning_ticket.user_id, session, bot)
+
+    winner = await session.get(User, winning_ticket.user_id)
+    winner_display = f"@{winner.username}" if (winner and winner.username) else (winner.first_name if winner else str(winning_ticket.user_id))
+    await callback.answer(f"🏆 Победитель: {winner_display}", show_alert=True)
+    await _show_admin_lottery(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "admin:lottery_pick")
+async def cb_admin_lottery_pick(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    lottery = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").limit(1)
+    )).scalar_one_or_none()
+    if not lottery:
+        await callback.answer("Нет активной лотереи.", show_alert=True)
+        return
+
+    rows = (await session.execute(
+        select(LotteryTicket.user_id, func.count(LotteryTicket.id).label("cnt"))
+        .where(LotteryTicket.lottery_id == lottery.id)
+        .group_by(LotteryTicket.user_id)
+        .order_by(func.count(LotteryTicket.id).desc())
+        .limit(20)
+    )).all()
+
+    participants = []
+    for row in rows:
+        uid, cnt = row.user_id, row.cnt
+        user = await session.get(User, uid)
+        participants.append((uid, user.username if user else None, user.first_name if user else str(uid), cnt))
+
+    await callback.message.edit_text(
+        "👤 <b>Выбери победителя:</b>",
+        parse_mode="HTML",
+        reply_markup=admin_lottery_pick_kb(participants),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:lottery_winner:"))
+async def cb_admin_lottery_winner(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    winner_id = int(callback.data.split(":")[2])
+    lottery = (await session.execute(
+        select(Lottery).where(Lottery.status == "active").limit(1)
+    )).scalar_one_or_none()
+    if not lottery:
+        await callback.answer("Нет активной лотереи.", show_alert=True)
+        return
+
+    await _finish_lottery(lottery, winner_id, session, bot)
+    winner = await session.get(User, winner_id)
+    winner_display = f"@{winner.username}" if (winner and winner.username) else (winner.first_name if winner else str(winner_id))
+    await callback.answer(f"🏆 Победитель: {winner_display}", show_alert=True)
+    await _show_admin_lottery(callback, session)
+
+
+async def _finish_lottery(lottery: Lottery, winner_id: int, session: AsyncSession, bot: Bot) -> None:
+    winner = await session.get(User, winner_id)
+    if winner:
+        winner.stars_balance = round(winner.stars_balance + lottery.prize_pool, 2)
+
+    lottery.status = "finished"
+    lottery.winner_id = winner_id
+    lottery.drawn_at = datetime.utcnow()
+    await session.commit()
+
+    # Notify winner
+    try:
+        if winner:
+            await bot.send_message(
+                winner_id,
+                f"🎉 <b>Поздравляем! Вы выиграли лотерею!</b>\n\n"
+                f"🏆 Ваш выигрыш: <b>{lottery.prize_pool:.2f} ⭐</b>\n"
+                f"💰 Звёзды начислены на ваш баланс!",
+                parse_mode="HTML",
+            )
+    except Exception:
+        pass
 

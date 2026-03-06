@@ -13,7 +13,7 @@ from database.engine import SessionFactory
 from handlers.button_helper import answer_with_content, safe_edit
 from keyboards.duel import (
     duel_menu_kb, active_duels_kb, duel_view_kb,
-    duel_creator_kb, duel_roll_kb, back_to_duel_kb,
+    duel_creator_kb, duel_roll_kb, back_to_duel_kb, duel_confirm_kb,
 )
 from keyboards.main import back_to_menu_kb
 
@@ -230,22 +230,17 @@ async def msg_duel_amount(
 
     await state.clear()
     db_user.stars_balance -= amount
-    expires_at = datetime.utcnow() + timedelta(minutes=DUEL_EXPIRE_MINUTES)
+    expires_at = datetime.utcnow() + timedelta(days=365)
     duel = Duel(creator_id=db_user.user_id, amount=amount, expires_at=expires_at)
     session.add(duel)
     await session.flush()
     await session.commit()
 
-    task = asyncio.create_task(
-        _expire_waiting_duel(duel.id, db_user.user_id, amount, message.bot)
-    )
-    _expire_tasks[duel.id] = task
-
     await message.answer(
         f"⚔️ <b>Дуэль #{duel.id} создана!</b>\n\n"
         f"💰 Ставка: <b>{amount:.0f} ⭐</b>\n"
-        f"⏳ Ожидание соперника... (до {DUEL_EXPIRE_MINUTES} мин)\n\n"
-        f"Как только кто-то присоединится — вы получите уведомление.",
+        f"⏳ Ожидание соперника...\n\n"
+        f"Как только кто-то присоединится — вы получите уведомление для подтверждения.",
         parse_mode="HTML",
         reply_markup=duel_creator_kb(duel.id),
     )
@@ -365,7 +360,7 @@ async def cb_duel_join(callback: CallbackQuery, session: AsyncSession, db_user: 
 
     db_user.stars_balance -= duel.amount
     duel.joiner_id = db_user.user_id
-    duel.status = "active"
+    duel.status = "confirming"
     await session.commit()
 
     task = _expire_tasks.pop(duel_id, None)
@@ -373,32 +368,110 @@ async def cb_duel_join(callback: CallbackQuery, session: AsyncSession, db_user: 
         task.cancel()
 
     creator = await session.get(User, duel.creator_id)
-    roll_kb = duel_roll_kb(duel_id)
+    creator_name = creator.first_name if creator else "Игрок"
 
-    # Notify creator
+    # Ask creator to confirm
     await _notify(
         callback.bot, duel.creator_id,
-        f"🔥 <b>Дуэль #{duel_id} — игрок найден!</b>\n\n"
-        f"⚔️ <b>{db_user.first_name}</b> вступил в дуэль!\n"
+        f"⚔️ <b>Дуэль #{duel_id} — запрос на участие!</b>\n\n"
+        f"👤 <b>{db_user.first_name}</b> хочет вступить в дуэль!\n"
         f"💰 Ставка: <b>{duel.amount:.0f} ⭐</b>\n\n"
-        f"🎲 Бросьте кубик — кто выше, тот и победит!",
-        roll_kb,
+        f"Подтвердить дуэль?",
+        duel_confirm_kb(duel_id),
     )
 
-    creator_name = creator.first_name if creator else "Игрок"
+    await safe_edit(
+        callback,
+        f"⏳ <b>Ожидание подтверждения</b>\n\n"
+        f"⚔️ Соперник: <b>{creator_name}</b>\n"
+        f"💰 Ставка: <b>{duel.amount:.0f} ⭐</b>\n\n"
+        f"Ждём пока создатель дуэли подтвердит участие...",
+        back_to_duel_kb(),
+    )
+    await callback.answer()
+
+
+# ─── Confirm / Decline join ───────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("duel:confirm:"))
+async def cb_duel_confirm(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+    duel_id = int(callback.data.split(":")[2])
+    duel = await session.get(Duel, duel_id)
+
+    if not duel or duel.status != "confirming":
+        await callback.answer("❌ Дуэль уже недоступна.", show_alert=True)
+        return
+    if duel.creator_id != db_user.user_id:
+        await callback.answer("❌ Вы не создатель этой дуэли.", show_alert=True)
+        return
+
+    duel.status = "active"
+    await session.commit()
+
+    roll_kb = duel_roll_kb(duel_id)
+    joiner = await session.get(User, duel.joiner_id)
+    joiner_name = joiner.first_name if joiner else "Игрок"
+
     await safe_edit(
         callback,
         f"🔥 <b>Дуэль #{duel_id} началась!</b>\n\n"
-        f"⚔️ Соперник: <b>{creator_name}</b>\n"
+        f"⚔️ Соперник: <b>{joiner_name}</b>\n"
         f"💰 Ставка: <b>{duel.amount:.0f} ⭐</b>\n\n"
         f"🎲 Бросьте кубик — кто выше, тот и победит!",
         roll_kb,
     )
     await callback.answer()
 
-    # Start dice timeout
+    await _notify(
+        callback.bot, duel.joiner_id,
+        f"🔥 <b>Дуэль #{duel_id} подтверждена!</b>\n\n"
+        f"⚔️ Соперник: <b>{db_user.first_name}</b>\n"
+        f"💰 Ставка: <b>{duel.amount:.0f} ⭐</b>\n\n"
+        f"🎲 Бросьте кубик — кто выше, тот и победит!",
+        roll_kb,
+    )
+
     dice_task = asyncio.create_task(_dice_timeout(duel_id, callback.bot))
     _dice_tasks[duel_id] = dice_task
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("duel:decline_join:"))
+async def cb_duel_decline_join(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+    duel_id = int(callback.data.split(":")[2])
+    duel = await session.get(Duel, duel_id)
+
+    if not duel or duel.status != "confirming":
+        await callback.answer("❌ Дуэль уже недоступна.", show_alert=True)
+        return
+    if duel.creator_id != db_user.user_id:
+        await callback.answer("❌ Вы не создатель этой дуэли.", show_alert=True)
+        return
+
+    # Refund both players
+    creator = await session.get(User, duel.creator_id)
+    joiner = await session.get(User, duel.joiner_id)
+    if creator:
+        creator.stars_balance += duel.amount
+    if joiner:
+        joiner.stars_balance += duel.amount
+    joiner_id = duel.joiner_id
+    duel.status = "cancelled"
+    await session.commit()
+
+    await safe_edit(
+        callback,
+        f"❌ <b>Дуэль #{duel_id} отклонена.</b>\n\n"
+        f"💫 <b>{duel.amount:.0f} ⭐</b> возвращено на ваш баланс.",
+        back_to_duel_kb(),
+    )
+    await callback.answer()
+
+    await _notify(
+        callback.bot, joiner_id,
+        f"❌ <b>Дуэль #{duel_id} отклонена создателем.</b>\n\n"
+        f"💫 <b>{duel.amount:.0f} ⭐</b> возвращено на ваш баланс.",
+        back_to_duel_kb(),
+    )
 
 
 # ─── Roll dice ────────────────────────────────────────────────────────────────
@@ -462,17 +535,14 @@ async def cb_duel_roll(callback: CallbackQuery, session: AsyncSession, db_user: 
 async def cb_duel_history(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     duels = (await session.execute(
         select(Duel).where(
-            or_(Duel.creator_id == db_user.user_id, Duel.joiner_id == db_user.user_id),
             Duel.status == "finished",
-        ).order_by(Duel.created_at.desc()).limit(10)
+        ).order_by(Duel.created_at.desc()).limit(20)
     )).scalars().all()
 
     if not duels:
         await safe_edit(
             callback,
-            "📜 <b>История дуэлей</b>\n\n"
-            "У вас ещё не было завершённых дуэлей.\n"
-            "Создайте дуэль или вступите в существующую!",
+            "📜 <b>История дуэлей</b>\n\nЗавершённых дуэлей ещё нет.",
             back_to_duel_kb(),
         )
         await callback.answer()
@@ -480,15 +550,19 @@ async def cb_duel_history(callback: CallbackQuery, session: AsyncSession, db_use
 
     lines = []
     for d in duels:
-        if d.winner_id is None:
-            icon, result = "🤝", "Ничья"
-        elif d.winner_id == db_user.user_id:
-            payout = round(d.amount * 2 * (1 - COMMISSION), 2)
-            icon, result = "🏆", f"+{payout:.0f} ⭐"
-        else:
-            icon, result = "💀", f"-{d.amount:.0f} ⭐"
-        lines.append(f"{icon} Дуэль #{d.id} | {d.amount:.0f}⭐ | {result}")
+        creator = await session.get(User, d.creator_id)
+        creator_name = creator.first_name if creator else "Игрок"
+        joiner = await session.get(User, d.joiner_id) if d.joiner_id else None
+        joiner_name = joiner.first_name if joiner else "?"
 
-    text = "📜 <b>История дуэлей (последние 10)</b>\n\n" + "\n".join(lines)
+        if d.winner_id is None:
+            result = "🤝 Ничья"
+        else:
+            winner = await session.get(User, d.winner_id)
+            result = f"🏆 {winner.first_name if winner else 'Игрок'}"
+
+        lines.append(f"⚔️ #{d.id} | {creator_name} vs {joiner_name} | {d.amount:.0f}⭐ | {result}")
+
+    text = "📜 <b>История дуэлей (последние 20)</b>\n\n" + "\n".join(lines)
     await safe_edit(callback, text, back_to_duel_kb())
     await callback.answer()

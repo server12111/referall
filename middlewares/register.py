@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import Callable, Awaitable, Any
 
 from aiogram import BaseMiddleware
@@ -65,6 +66,14 @@ class BotHubMiddleware(BaseMiddleware):
         # Admins always bypass
         if user.id in config.ADMIN_IDS:
             return await handler(event, data)
+
+        # In sponsors mode — skip BotoHub check entirely
+        _session = data.get("session")
+        if _session:
+            from database.models import BotSettings as _BS
+            _mode_row = await _session.get(_BS, "referral_mode")
+            if _mode_row and _mode_row.value == "sponsors":
+                return await handler(event, data)
 
         from utils.botohub_api import check_botohub
         result = await check_botohub(user.id)
@@ -137,6 +146,14 @@ class FlyerMiddleware(BaseMiddleware):
         # Admins always bypass
         if user.id in config.ADMIN_IDS:
             return await handler(event, data)
+
+        # In sponsors mode — skip Flyer check entirely
+        _session = data.get("session")
+        if _session:
+            from database.models import BotSettings as _BS
+            _mode_row = await _session.get(_BS, "referral_mode")
+            if _mode_row and _mode_row.value == "sponsors":
+                return await handler(event, data)
 
         subscribed = await check_subscription(
             user_id=user.id,
@@ -227,4 +244,13 @@ class RegisteredUserMiddleware(BaseMiddleware):
             return
 
         data["db_user"] = db_user
+
+        # Update last_seen_at at most once per hour to reduce DB writes
+        now = datetime.utcnow()
+        if db_user.last_seen_at is None or (now - db_user.last_seen_at).total_seconds() > 3600:
+            db_user.last_seen_at = now
+            session = data.get("session")
+            if session:
+                await session.commit()
+
         return await handler(event, data)

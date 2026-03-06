@@ -22,6 +22,20 @@ def _get_client():
     return _client
 
 
+async def get_channels_count() -> int:
+    """Return the number of Flyer channels configured for this bot."""
+    client = _get_client()
+    if client is None:
+        return 0
+    try:
+        info = await client.get_me()
+        channels = info.get("channels") or info.get("resources") or []
+        return len(channels)
+    except Exception as exc:
+        logger.warning("Flyer get_me error: %s", exc)
+        return 0
+
+
 async def check_subscription(user_id: int, language_code: str | None = None) -> bool:
     """
     Check whether the user has subscribed to all required Flyer channels.

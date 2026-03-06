@@ -1,7 +1,6 @@
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import config
 from database.models import BotSettings, User
 
 
@@ -23,19 +22,46 @@ async def grant_referral_reward_if_pending(
         await session.commit()
         return
 
-    rr_row = await session.get(BotSettings, "referral_reward")
-    reward = float(rr_row.value) if rr_row else config.REFERRAL_REWARD
+    import json
+    rt_row = await session.get(BotSettings, "reward_type")
+    reward_type = rt_row.value if rt_row else "per_sponsor"
 
-    referrer.stars_balance += reward
+    if reward_type == "fixed":
+        rr_row = await session.get(BotSettings, "referral_reward")
+        reward = float(rr_row.value) if rr_row and rr_row.value else 0.0
+    else:
+        mode_row = await session.get(BotSettings, "referral_mode")
+        mode = mode_row.value if mode_row else "botohub_flyer"
+        sps_row = await session.get(BotSettings, "stars_per_sponsor")
+        stars_per_sponsor = float(sps_row.value) if sps_row and sps_row.value else 0.45
+
+        if mode == "sponsors":
+            sponsors_row = await session.get(BotSettings, "sponsor_channels")
+            sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value and sponsors_row.value.strip() else []
+            total_sponsors = len(sponsors)
+        else:
+            from services.flyer import get_channels_count
+            botohub_row = await session.get(BotSettings, "botohub_sponsors_count")
+            botohub_count = int(botohub_row.value) if botohub_row else 0
+            flyer_count = await get_channels_count()
+            total_sponsors = botohub_count + flyer_count
+
+        reward = round(total_sponsors * stars_per_sponsor, 2)
+
     referrer.referrals_count += 1
     user.referral_reward_pending = False
-    await session.commit()
 
-    try:
-        await bot.send_message(
-            user.referrer_id,
-            f"🎉 Вам начислено <b>{reward} ⭐</b> за нового реферала!",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
+    if referrer.referrals_count >= 3:
+        referrer.stars_balance += reward
+        await session.commit()
+
+        try:
+            await bot.send_message(
+                user.referrer_id,
+                f"🎉 Вам начислено <b>{reward} ⭐</b> за нового реферала!",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    else:
+        await session.commit()
