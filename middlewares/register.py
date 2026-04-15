@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from typing import Callable, Awaitable, Any
@@ -25,19 +26,21 @@ class SessionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
 
-class BotHubMiddleware(BaseMiddleware):
+class CombinedWallMiddleware(BaseMiddleware):
     """
-    Enforces BotoHub subscription check before any bot feature.
+    Checks BotoHub + Flyer in parallel on every request.
+    Shows a single combined subscription wall if either integration requires it.
 
-    /admin and /start are always whitelisted:
-      • /admin — admin panel, never blocked
-      • /start — registration runs first; the start handler itself shows the
-                 subscription wall, preventing a loop.
-    Admins always bypass the check entirely.
-    botohub:check callback is also whitelisted — its handler does the re-check.
+    Whitelisted commands/callbacks are always let through:
+      • /admin, /start — handled by their own handlers
+      • botohub:check  — legacy callback (kept for backwards compatibility)
+      • wall:check     — new unified confirm button
+    Admins always bypass entirely.
+    In "sponsors" mode — skips both BotoHub and Flyer checks.
     """
 
     _SKIP_COMMANDS = {"/admin", "/start"}
+    _SKIP_CALLBACKS = {"botohub:check", "wall:check"}
 
     async def __call__(
         self,
@@ -53,8 +56,7 @@ class BotHubMiddleware(BaseMiddleware):
 
         elif isinstance(event, CallbackQuery):
             user = event.from_user
-            # Let botohub:check through — the handler re-checks via API itself
-            if event.data == "botohub:check":
+            if event.data in self._SKIP_CALLBACKS:
                 return await handler(event, data)
 
         else:
@@ -67,7 +69,7 @@ class BotHubMiddleware(BaseMiddleware):
         if user.id in config.ADMIN_IDS:
             return await handler(event, data)
 
-        # In sponsors mode — skip BotoHub check entirely
+        # In sponsors mode — skip BotoHub + Flyer checks entirely
         _session = data.get("session")
         if _session:
             from database.models import BotSettings as _BS
@@ -75,27 +77,80 @@ class BotHubMiddleware(BaseMiddleware):
             if _mode_row and _mode_row.value == "sponsors":
                 return await handler(event, data)
 
-        from utils.botohub_api import check_botohub
-        result = await check_botohub(user.id)
+        try:
+            from utils.botohub_api import check_botohub
+            from services.flyer import check_subscription, get_flyer_tasks
+            from services.piarflow import get_piarflow_tasks
 
-        if not result["completed"] and not result["skip"]:
-            from keyboards.botohub import build_botohub_wall_kb
-            wall_text = "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"
-            wall_kb = build_botohub_wall_kb(result["tasks"])
+            # Read enabled flags sequentially (SQLAlchemy async session does NOT support concurrent access)
+            session2 = data.get("session")
+            _pf_count = 5
+            _bh_on = True
+            _fl_on = True
+            _pf_on = False
+            if session2:
+                from database.models import BotSettings as _BS2
 
-            if isinstance(event, CallbackQuery):
-                try:
-                    await event.answer()
-                except Exception:
-                    pass
-                await event.message.answer(wall_text, reply_markup=wall_kb)
-            else:
-                await event.answer(wall_text, reply_markup=wall_kb)
+                async def _flag(k, default):
+                    r = await session2.get(_BS2, k)
+                    return (r.value == "1") if r else default
 
-            logger.info("BotoHub: blocked user %s — not subscribed", user.id)
-            return  # block
+                _bh_on = await _flag("integration_botohub_enabled", True)
+                _fl_on = await _flag("integration_flyer_enabled", True)
+                _pf_on = await _flag("integration_piarflow_enabled", False)
 
-        # User passed the subscription wall — give referral reward if still pending
+                _pf_row = await session2.get(_BS2, "piarflow_count")
+                if _pf_row and _pf_row.value:
+                    _pf_count = int(_pf_row.value)
+
+            # Check integrations (external API calls — safe to run in parallel)
+            async def _skip_bh():
+                return {"completed": True, "skip": True, "tasks": []}
+
+            async def _skip_bool():
+                return True
+
+            bh_result, flyer_done, pf_result = await asyncio.gather(
+                check_botohub(user.id) if _bh_on else _skip_bh(),
+                check_subscription(user.id, user.language_code) if _fl_on else _skip_bool(),
+                get_piarflow_tasks(user.id, _pf_count) if _pf_on else _skip_bh(),
+            )
+
+            bh_pending = _bh_on and not bh_result["completed"] and not bh_result["skip"]
+            pf_pending = _pf_on and not pf_result["completed"] and not pf_result["skip"]
+            flyer_pending = _fl_on and not flyer_done
+
+            if bh_pending or flyer_pending or pf_pending:
+                flyer_tasks = await get_flyer_tasks(user.id, user.language_code) if flyer_pending else []
+                from keyboards.botohub import build_combined_wall_kb
+                wall_text = "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"
+                wall_kb = build_combined_wall_kb(
+                    bh_result["tasks"] if bh_pending else [],
+                    flyer_tasks,
+                    [],
+                    piarflow_tasks=pf_result["tasks"] if pf_pending else [],
+                )
+
+                if isinstance(event, CallbackQuery):
+                    try:
+                        await event.answer()
+                    except Exception:
+                        pass
+                    await event.message.answer(wall_text, reply_markup=wall_kb)
+                else:
+                    await event.answer(wall_text, reply_markup=wall_kb)
+
+                logger.info(
+                    "CombinedWall: blocked user %s (bh=%s, flyer=%s, pf=%s)",
+                    user.id, bh_pending, flyer_pending, pf_pending,
+                )
+                return  # block
+
+        except Exception as exc:
+            logger.error("CombinedWallMiddleware error for user %s: %s", user.id, exc)
+            # On any middleware error — let the user through
+
+        # All integrations passed — give referral reward if still pending
         session = data.get("session")
         if session:
             from database.models import User
@@ -109,66 +164,9 @@ class BotHubMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-class FlyerMiddleware(BaseMiddleware):
-    """
-    Enforces Flyer subscription check after BotHub passes.
-
-    /admin and /start are always whitelisted.
-    Admins always bypass the check entirely.
-    When the user is not subscribed, Flyer sends the wall automatically.
-    """
-
-    _SKIP_COMMANDS = {"/admin", "/start"}
-
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
-        from services.flyer import check_subscription
-
-        if isinstance(event, Message):
-            user = event.from_user
-            text = event.text or ""
-            if any(text.startswith(cmd) for cmd in self._SKIP_COMMANDS):
-                return await handler(event, data)
-
-        elif isinstance(event, CallbackQuery):
-            user = event.from_user
-
-        else:
-            return await handler(event, data)
-
-        if user is None:
-            return await handler(event, data)
-
-        # Admins always bypass
-        if user.id in config.ADMIN_IDS:
-            return await handler(event, data)
-
-        # In sponsors mode — skip Flyer check entirely
-        _session = data.get("session")
-        if _session:
-            from database.models import BotSettings as _BS
-            _mode_row = await _session.get(_BS, "referral_mode")
-            if _mode_row and _mode_row.value == "sponsors":
-                return await handler(event, data)
-
-        subscribed = await check_subscription(
-            user_id=user.id,
-            language_code=user.language_code,
-        )
-        if not subscribed:
-            # Flyer already sent the subscription wall automatically.
-            if isinstance(event, CallbackQuery):
-                try:
-                    await event.answer()
-                except Exception:
-                    pass
-            return  # block
-
-        return await handler(event, data)
+# Aliases kept for import compatibility (main.py still imports these names)
+BotHubMiddleware = CombinedWallMiddleware
+FlyerMiddleware = CombinedWallMiddleware
 
 
 class RegisteredUserMiddleware(BaseMiddleware):
@@ -222,8 +220,8 @@ class RegisteredUserMiddleware(BaseMiddleware):
             if any(text.startswith(cmd) for cmd in self.SKIP_TEXT):
                 return await handler(event, data)
 
-        # Allow botohub:check through
-        if isinstance(event, CallbackQuery) and event.data == "botohub:check":
+        # Allow botohub:check and wall:check through
+        if isinstance(event, CallbackQuery) and event.data in {"botohub:check", "wall:check"}:
             session = data.get("session")
             if session:
                 db_user = await session.get(User, user.id)

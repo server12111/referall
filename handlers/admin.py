@@ -1,15 +1,16 @@
 import json
 from datetime import datetime, timedelta
+from io import BytesIO
 from aiogram import Router, Bot
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from datetime import date as _date
 
-from database.models import User, PromoCode, PromoUse, Withdrawal, BotSettings, Task, TaskCompletion, GameSession, Transfer, Duel, Lottery, LotteryTicket
+from database.models import User, PromoCode, PromoUse, Withdrawal, BotSettings, Task, TaskCompletion, GameSession, ButtonContent, Transfer, Duel, Lottery, LotteryTicket
 from handlers.withdraw import build_withdrawal_msg
 from database.engine import set_setting, get_button_content, set_button_photo, set_button_text
 from keyboards.admin import (
@@ -18,7 +19,7 @@ from keyboards.admin import (
     task_management_kb, task_type_kb, task_list_admin_kb, task_actions_kb,
     games_list_kb, game_detail_kb,
     BUTTON_KEYS, button_content_list_kb, button_edit_kb,
-    retention_kb, stats_tabs_kb, sponsor_list_kb,
+    retention_kb, stats_tabs_kb,
 )
 from keyboards.lottery import admin_lottery_kb, admin_lottery_pick_kb
 from config import config
@@ -76,6 +77,13 @@ class AdminTaskStates(StatesGroup):
     target_value = State()
 
 
+class AdminBulkTaskStates(StatesGroup):
+    title = State()
+    description = State()
+    reward = State()
+    channels = State()
+
+
 class AdminGameStates(StatesGroup):
     set_coeff = State()
     set_coeff1 = State()
@@ -96,11 +104,9 @@ class AdminRetentionStates(StatesGroup):
     set_message = State()
 
 
-class AdminSponsorStates(StatesGroup):
-    channel_id = State()
-    title = State()
-    link = State()
 
+class AdminDBImportStates(StatesGroup):
+    waiting_file = State()
 
 
 # ─── Guard ───────────────────────────────────────────────────────────────────
@@ -899,113 +905,6 @@ async def cb_settings_reward_type(callback: CallbackQuery, session: AsyncSession
     await cb_settings(callback, session)
 
 
-# ─── Sponsors management ──────────────────────────────────────────────────────
-
-@router.callback_query(lambda c: c.data == "admin:sponsors")
-async def cb_sponsors(callback: CallbackQuery, session: AsyncSession) -> None:
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("Нет доступа.", show_alert=True)
-
-    mode_row = await session.get(BotSettings, "referral_mode")
-    mode = mode_row.value if mode_row else "botohub_flyer"
-    mode_label = "🔵 Спонсоры" if mode == "sponsors" else "🟢 Флаер + БотоХаб"
-
-    sps_row = await session.get(BotSettings, "stars_per_sponsor")
-    stars_per_sponsor = float(sps_row.value) if sps_row and sps_row.value else 0.45
-
-    sponsors_row = await session.get(BotSettings, "sponsor_channels")
-    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
-
-    text = (
-        f"📡 <b>Управление спонсорами</b>\n\n"
-        f"Режим: <b>{mode_label}</b>\n"
-        f"Звёзд за спонсора: <b>{stars_per_sponsor}</b>\n"
-        f"Спонсоров добавлено: <b>{len(sponsors)}</b>\n\n"
-        f"Нажми на спонсора чтобы удалить его:"
-        if sponsors else
-        f"📡 <b>Управление спонсорами</b>\n\n"
-        f"Режим: <b>{mode_label}</b>\n"
-        f"Звёзд за спонсора: <b>{stars_per_sponsor}</b>\n\n"
-        f"Спонсоров пока нет. Нажми «Добавить»."
-    )
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=sponsor_list_kb(sponsors))
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "admin:add_sponsor")
-async def cb_add_sponsor(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("Нет доступа.", show_alert=True)
-    await state.set_state(AdminSponsorStates.channel_id)
-    await callback.message.edit_text(
-        "📡 <b>Добавить спонсора</b>\n\n"
-        "Введи ID или @username канала (например: <code>@mychannel</code> или <code>-1001234567890</code>):",
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@router.message(AdminSponsorStates.channel_id)
-async def msg_sponsor_channel_id(message: Message, state: FSMContext) -> None:
-    await state.update_data(channel_id=message.text.strip())
-    await state.set_state(AdminSponsorStates.title)
-    await message.answer("📛 Введи название канала (отображается в кнопке):")
-
-
-@router.message(AdminSponsorStates.title)
-async def msg_sponsor_title(message: Message, state: FSMContext) -> None:
-    await state.update_data(title=message.text.strip())
-    await state.set_state(AdminSponsorStates.link)
-    await message.answer(
-        "🔗 Введи ссылку для кнопки подписки (например: <code>https://t.me/mychannel</code>):",
-        parse_mode="HTML",
-    )
-
-
-@router.message(AdminSponsorStates.link)
-async def msg_sponsor_link(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    data = await state.get_data()
-    await state.clear()
-
-    new_sponsor = {
-        "id": data["channel_id"],
-        "title": data["title"],
-        "link": message.text.strip(),
-    }
-
-    sponsors_row = await session.get(BotSettings, "sponsor_channels")
-    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
-    sponsors.append(new_sponsor)
-    await set_setting(session, "sponsor_channels", json.dumps(sponsors, ensure_ascii=False))
-    await session.commit()
-
-    await message.answer(
-        f"✅ Спонсор <b>{new_sponsor['title']}</b> добавлен!\n"
-        f"Всего спонсоров: <b>{len(sponsors)}</b>",
-        parse_mode="HTML",
-        reply_markup=admin_main_kb(),
-    )
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("admin:del_sponsor:"))
-async def cb_del_sponsor(callback: CallbackQuery, session: AsyncSession) -> None:
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("Нет доступа.", show_alert=True)
-
-    idx = int(callback.data.split(":")[2])
-    sponsors_row = await session.get(BotSettings, "sponsor_channels")
-    sponsors = json.loads(sponsors_row.value) if sponsors_row and sponsors_row.value.strip() else []
-
-    if 0 <= idx < len(sponsors):
-        removed = sponsors.pop(idx)
-        await set_setting(session, "sponsor_channels", json.dumps(sponsors, ensure_ascii=False))
-        await session.commit()
-        await callback.answer(f"Удалён: {removed['title']}", show_alert=True)
-
-    await cb_sponsors(callback, session)
-
-
 # ─── Broadcast ───────────────────────────────────────────────────────────────
 
 @router.callback_query(lambda c: c.data == "admin:broadcast")
@@ -1193,7 +1092,7 @@ async def cb_task_info(callback: CallbackQuery, session: AsyncSession) -> None:
         select(func.count(TaskCompletion.id)).where(TaskCompletion.task_id == task_id)
     )).scalar()
 
-    type_label = {"subscribe": "📢 Подписка на канал", "referrals": "👥 Рефералы"}.get(task.task_type, task.task_type)
+    type_label = {"subscribe": "📢 Подписка на канал", "referrals": "👥 Рефералы", "linkni": "🔗 Linkni"}.get(task.task_type, task.task_type)
     status = "✅ Активно" if task.is_active else "❌ Неактивно"
 
     extra = ""
@@ -1201,6 +1100,8 @@ async def cb_task_info(callback: CallbackQuery, session: AsyncSession) -> None:
         extra = f"\nКанал: <code>{task.channel_id}</code>"
     elif task.task_type == "referrals":
         extra = f"\nЦель: {task.target_value} рефералов"
+    elif task.task_type == "linkni":
+        extra = f"\nLinkni code: <code>{task.channel_id}</code>"
 
     await callback.message.edit_text(
         f"📌 <b>{task.title}</b>\n\n"
@@ -1304,6 +1205,14 @@ async def msg_task_reward(message: Message, state: FSMContext, session: AsyncSes
             "<b>Важно:</b> бот должен быть администратором канала для проверки подписки.",
             parse_mode="HTML",
         )
+    elif data["task_type"] == "linkni":
+        await state.set_state(AdminTaskStates.channel_id)
+        await message.answer(
+            "🔗 Введи Linkni code для задания:\n"
+            "Пример: <code>2o2i</code>\n\n"
+            "Код берётся из ссылки: <code>https://t.me/linknibot/app?startapp=x_<b>КОД</b></code>",
+            parse_mode="HTML",
+        )
     elif data["task_type"] == "referrals":
         await state.set_state(AdminTaskStates.target_value)
         await message.answer("👥 Введи необходимое количество рефералов (целое число):")
@@ -1314,6 +1223,13 @@ async def msg_task_reward(message: Message, state: FSMContext, session: AsyncSes
 @router.message(AdminTaskStates.channel_id)
 async def msg_task_channel(message: Message, state: FSMContext, session: AsyncSession, bot: Bot) -> None:
     channel_id = message.text.strip()
+    data = await state.get_data()
+
+    # Linkni tasks use channel_id as the Linkni code — no channel admin check needed
+    if data.get("task_type") == "linkni":
+        await state.update_data(channel_id=channel_id, reward=0.25)
+        await _save_task(message, state, session)
+        return
 
     # Verify bot is an admin of the channel before saving the task
     try:
@@ -1369,7 +1285,7 @@ async def _save_task(message: Message, state: FSMContext, session: AsyncSession)
     session.add(task)
     await session.commit()
 
-    type_label = {"subscribe": "📢 Подписка на канал", "referrals": "👥 Рефералы"}.get(data["task_type"], data["task_type"])
+    type_label = {"subscribe": "📢 Подписка на канал", "referrals": "👥 Рефералы", "linkni": "🔗 Linkni"}.get(data["task_type"], data["task_type"])
     extra = ""
     if data.get("channel_id"):
         extra = f"\nКанал: <code>{data['channel_id']}</code>"
@@ -1382,6 +1298,104 @@ async def _save_task(message: Message, state: FSMContext, session: AsyncSession)
         f"Тип: {type_label}\n"
         f"Награда: <b>{data['reward']} ⭐</b>"
         f"{extra}",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
+
+
+# ─── Tasks: Bulk Add (FSM) ───────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "admin:add_bulk_tasks")
+async def cb_add_bulk_tasks(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminBulkTaskStates.title)
+    await callback.message.edit_text(
+        "📦 <b>Массовое добавление каналов</b>\n\n"
+        "Введи общее название для всех заданий:\n"
+        "<i>(например: Подписаться на канал)</i>",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminBulkTaskStates.title)
+async def msg_bulk_title(message: Message, state: FSMContext) -> None:
+    await state.update_data(title=message.text.strip())
+    await state.set_state(AdminBulkTaskStates.description)
+    await message.answer("📝 Введи общее описание для всех заданий:")
+
+
+@router.message(AdminBulkTaskStates.description)
+async def msg_bulk_description(message: Message, state: FSMContext) -> None:
+    await state.update_data(description=message.text.strip())
+    await state.set_state(AdminBulkTaskStates.reward)
+    await message.answer("💰 Введи награду для каждого задания (число, например: 5):")
+
+
+@router.message(AdminBulkTaskStates.reward)
+async def msg_bulk_reward(message: Message, state: FSMContext) -> None:
+    try:
+        reward = float(message.text.strip().replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Введи число:")
+        return
+    await state.update_data(reward=reward)
+    await state.set_state(AdminBulkTaskStates.channels)
+    await message.answer(
+        "📢 Введи ID или username каналов — <b>каждый с новой строки</b>:\n\n"
+        "Пример:\n"
+        "<code>@channel1\n@channel2\n-1001234567890\n@channel4</code>\n\n"
+        "<b>Важно:</b> бот должен быть администратором каждого канала.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminBulkTaskStates.channels)
+async def msg_bulk_channels(message: Message, state: FSMContext, session: AsyncSession, bot: Bot) -> None:
+    data = await state.get_data()
+    await state.clear()
+
+    lines = [line.strip() for line in message.text.strip().splitlines() if line.strip()]
+    if not lines:
+        await message.answer("❌ Нет каналов для добавления.")
+        return
+
+    ok = []
+    failed = []
+
+    bot_me = await bot.get_me()
+    for channel_id in lines:
+        try:
+            member = await bot.get_chat_member(channel_id, bot_me.id)
+            if member.status not in ("administrator", "creator"):
+                failed.append(f"<code>{channel_id}</code> — бот не админ")
+                continue
+            task = Task(
+                task_type="subscribe",
+                title=data["title"],
+                description=data["description"],
+                reward=data["reward"],
+                channel_id=channel_id,
+            )
+            session.add(task)
+            ok.append(f"<code>{channel_id}</code>")
+        except Exception as e:
+            failed.append(f"<code>{channel_id}</code> — ошибка доступа")
+            import logging
+            logging.getLogger(__name__).warning("Bulk task channel error %s: %s", channel_id, e)
+
+    if ok:
+        await session.commit()
+
+    lines_out = []
+    if ok:
+        lines_out.append(f"✅ Создано заданий: <b>{len(ok)}</b>\n" + "\n".join(ok))
+    if failed:
+        lines_out.append(f"❌ Не добавлены ({len(failed)}):\n" + "\n".join(failed))
+
+    await message.answer(
+        "📦 <b>Результат массового добавления</b>\n\n" + "\n\n".join(lines_out),
         parse_mode="HTML",
         reply_markup=admin_main_kb(),
     )
@@ -2132,3 +2146,309 @@ async def _finish_lottery(lottery: Lottery, winner_id: int, session: AsyncSessio
     except Exception:
         pass
 
+
+# ─── DB Export / Import ───────────────────────────────────────────────────────
+
+_EXPORT_MODELS = [
+    User, BotSettings, PromoCode, PromoUse, Withdrawal,
+    Task, TaskCompletion, GameSession, ButtonContent,
+    Duel, Transfer, Lottery, LotteryTicket,
+]
+
+_DELETE_ORDER = [
+    LotteryTicket, Lottery, Transfer, Duel, GameSession,
+    TaskCompletion, Task, Withdrawal, PromoUse, PromoCode,
+    ButtonContent, BotSettings, User,
+]
+
+
+def _serialize_row(row, model) -> dict:
+    result = {}
+    for col in model.__table__.columns:
+        val = getattr(row, col.name)
+        if isinstance(val, datetime):
+            val = val.isoformat()
+        result[col.name] = val
+    return result
+
+
+@router.callback_query(lambda c: c.data == "admin:db_export")
+async def cb_admin_db_export(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    await callback.answer()
+    await callback.message.answer("⏳ Формую бекап...")
+
+    data = {}
+    for model in _EXPORT_MODELS:
+        rows = (await session.execute(select(model))).scalars().all()
+        data[model.__tablename__] = [_serialize_row(r, model) for r in rows]
+
+    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"backup_{datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+
+    await bot.send_document(
+        callback.from_user.id,
+        BufferedInputFile(json_bytes, filename=filename),
+        caption=f"✅ Бекап БД\n📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n📊 Таблиць: {len(data)}",
+    )
+
+
+@router.callback_query(lambda c: c.data == "admin:db_import")
+async def cb_admin_db_import(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    await state.set_state(AdminDBImportStates.waiting_file)
+    await callback.answer()
+    await callback.message.answer(
+        "📥 <b>Імпорт бази даних</b>\n\n"
+        "Надішліть JSON-файл бекапу.\n"
+        "⚠️ <b>Увага!</b> Всі поточні дані будуть замінені!\n\n"
+        "Для скасування надішліть /admin",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminDBImportStates.waiting_file)
+async def msg_admin_db_import_file(message: Message, session: AsyncSession, state: FSMContext, bot: Bot) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.document or not message.document.file_name.endswith(".json"):
+        await message.answer("❌ Надішліть файл з розширенням .json")
+        return
+
+    await message.answer("⏳ Обробляю файл...")
+    await state.clear()
+
+    try:
+        file_io = BytesIO()
+        await bot.download(message.document.file_id, destination=file_io)
+        file_io.seek(0)
+        data = json.loads(file_io.read().decode("utf-8"))
+    except Exception as e:
+        await message.answer(f"❌ Помилка читання файлу:\n<code>{e}</code>", parse_mode="HTML")
+        return
+
+    try:
+        from sqlalchemy import DateTime as _DateTime
+        for model in _DELETE_ORDER:
+            await session.execute(delete(model))
+
+        for model in _EXPORT_MODELS:
+            table_name = model.__tablename__
+            if table_name not in data:
+                continue
+            for row_dict in data[table_name]:
+                converted = {}
+                for col in model.__table__.columns:
+                    val = row_dict.get(col.name)
+                    if val is not None and isinstance(col.type, _DateTime):
+                        val = datetime.fromisoformat(val)
+                    converted[col.name] = val
+                session.add(model(**converted))
+
+        await session.commit()
+        await message.answer("✅ <b>Імпорт успішний!</b>\nБаза даних відновлена.", parse_mode="HTML")
+    except Exception as e:
+        await session.rollback()
+        await message.answer(f"❌ Помилка імпорту:\n<code>{e}</code>", parse_mode="HTML")
+
+
+# ─── Integrations management ─────────────────────────────────────────────────
+
+from keyboards.admin import integrations_kb, integration_counts_kb, integration_keys_kb
+
+
+class AdminIntegrationStates(StatesGroup):
+    set_count = State()
+    set_key = State()
+
+
+_INTEGRATION_LABELS = {
+    "botohub": "BotoHub",
+    "flyer": "Flyer",
+    "piarflow": "PiarFlow",
+    "subgram": "Subgram",
+    "gramads": "GramAds",
+}
+
+
+async def _get_integration_statuses(session: AsyncSession) -> dict:
+    statuses = {}
+    for key in _INTEGRATION_LABELS:
+        row = await session.get(BotSettings, f"integration_{key}_enabled")
+        # Default: BotoHub and Flyer enabled, others disabled until key is set
+        default = key in ("botohub", "flyer")
+        statuses[key] = row.value == "1" if row else default
+    return statuses
+
+
+@router.callback_query(lambda c: c.data == "admin:integrations")
+async def cb_integrations(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    statuses = await _get_integration_statuses(session)
+    text = (
+        "🔌 <b>Управління інтеграціями</b>\n\n"
+        "Натисніть на інтеграцію щоб увімкнути/вимкнути.\n"
+        "«📊 Кількість спонсорів» — налаштувати скільки каналів показувати від кожної інтеграції.\n"
+        "«🔑 API ключі» — вказати ключі для нових інтеграцій."
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=integrations_kb(statuses))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("integration:toggle:"))
+async def cb_integration_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    key = callback.data.split(":")[2]
+    if key not in _INTEGRATION_LABELS:
+        return await callback.answer("Невідома інтеграція.", show_alert=True)
+
+    db_key = f"integration_{key}_enabled"
+    row = await session.get(BotSettings, db_key)
+    default = key in ("botohub", "flyer")
+    current = row.value == "1" if row else default
+    new_val = "0" if current else "1"
+    await set_setting(session, db_key, new_val)
+    await session.commit()
+
+    label = _INTEGRATION_LABELS[key]
+    state_txt = "увімкнено ✅" if new_val == "1" else "вимкнено ❌"
+    await callback.answer(f"{label}: {state_txt}", show_alert=False)
+    await cb_integrations(callback, session)
+
+
+@router.callback_query(lambda c: c.data == "integration:counts")
+async def cb_integration_counts(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await callback.message.edit_text(
+        "📊 <b>Кількість спонсорів</b>\n\n"
+        "Оберіть інтеграцію для зміни кількості каналів (1–10):",
+        parse_mode="HTML",
+        reply_markup=integration_counts_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("integration:count:"))
+async def cb_integration_count_set(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    key = callback.data.split(":")[2]
+    db_key = f"{key}_count"
+    row = await session.get(BotSettings, db_key)
+    current = int(row.value) if row and row.value else 5
+    label = _INTEGRATION_LABELS.get(key, key)
+
+    await state.set_state(AdminIntegrationStates.set_count)
+    await state.update_data(count_key=db_key)
+    await callback.message.edit_text(
+        f"📊 <b>{label} — кількість спонсорів</b>\n\n"
+        f"Поточне значення: <b>{current}</b>\n"
+        f"Введи нове значення (1–10):",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminIntegrationStates.set_count)
+async def msg_integration_count(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        val = int(message.text.strip())
+        if not 1 <= val <= 10:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи ціле число від 1 до 10:")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+    db_key = data["count_key"]
+    await set_setting(session, db_key, str(val))
+    await session.commit()
+    await message.answer(
+        f"✅ Кількість спонсорів встановлено: <b>{val}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
+
+
+@router.callback_query(lambda c: c.data == "integration:keys")
+async def cb_integration_keys(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await callback.message.edit_text(
+        "🔑 <b>API ключі інтеграцій</b>\n\n"
+        "Оберіть інтеграцію для введення ключа:",
+        parse_mode="HTML",
+        reply_markup=integration_keys_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("integration:key:"))
+async def cb_integration_key_set(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+
+    key = callback.data.split(":")[2]
+    label = _INTEGRATION_LABELS.get(key, key)
+    key_names = {
+        "piarflow": "PIARFLOW_KEY",
+        "subgram": "SUBGRAM_KEY",
+        "linkni": "LINKNI_CODE",
+        "gramads": "GRAMADS_TOKEN",
+    }
+    env_name = key_names.get(key, key.upper() + "_KEY")
+
+    await state.set_state(AdminIntegrationStates.set_key)
+    await state.update_data(integration_key=key, env_name=env_name)
+    await callback.message.edit_text(
+        f"🔑 <b>{label}</b>\n\n"
+        f"Введи значення для <code>{env_name}</code>:\n"
+        f"(Ключ збережеться в базі даних і буде використовуватись до перезапуску бота)",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminIntegrationStates.set_key)
+async def msg_integration_key(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    await state.clear()
+
+    key = data["integration_key"]
+    env_name = data["env_name"]
+    value = message.text.strip()
+
+    # Save to DB so it persists across bot restarts (applied at next restart)
+    await set_setting(session, f"integration_{key}_key", value)
+    await session.commit()
+
+    # Also apply to current runtime config
+    from config import config as _cfg
+    key_map = {
+        "piarflow": "PIARFLOW_KEY",
+        "subgram": "SUBGRAM_KEY",
+        "linkni": "LINKNI_CODE",
+        "gramads": "GRAMADS_TOKEN",
+    }
+    attr = key_map.get(key)
+    if attr and hasattr(_cfg, attr):
+        setattr(_cfg, attr, value)
+
+    await message.answer(
+        f"✅ Ключ <code>{env_name}</code> збережено!\n"
+        f"Значення: <code>{value[:20]}{'...' if len(value) > 20 else ''}</code>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )

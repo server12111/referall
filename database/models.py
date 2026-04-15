@@ -90,6 +90,15 @@ class TaskCompletion(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class LinkniCompletion(Base):
+    __tablename__ = "linkni_completions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    entry_key: Mapped[str] = mapped_column(String(512))
+    completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     __tablename__ = "game_sessions"
 

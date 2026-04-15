@@ -34,35 +34,23 @@ def profile_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def tasks_list_kb(tasks: list, completed_ids: set) -> InlineKeyboardMarkup:
+def task_single_kb(task_type: str, identifier: str, url: str | None = None) -> InlineKeyboardMarkup:
+    """Keyboard for single task display (one-at-a-time mode)."""
     builder = InlineKeyboardBuilder()
-    for task in tasks:
-        done = task.id in completed_ids
-        prefix = "✅ " if done else ""
-        builder.row(InlineKeyboardButton(
-            text=f"{prefix}{task.title} (+{task.reward} ⭐)",
-            callback_data=f"task:view:{task.id}",
-        ))
+    if url:
+        btn_text = "🔗 Выполнить задание" if task_type == "linkni" else "📢 Подписаться"
+        builder.row(InlineKeyboardButton(text=btn_text, url=url))
+    if task_type == "linkni":
+        builder.row(InlineKeyboardButton(text="✅ Проверить", callback_data=f"task:linkni:{identifier}"))
+    else:
+        builder.row(InlineKeyboardButton(text="✅ Проверить", callback_data=f"task:bot:{identifier}"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main"))
     return builder.as_markup()
 
 
-def task_detail_kb(task_id: int, task_type: str, channel_id: str | None, completed: bool) -> InlineKeyboardMarkup:
+def task_done_kb() -> InlineKeyboardMarkup:
+    """Shown after task completion."""
     builder = InlineKeyboardBuilder()
-    if not completed:
-        if task_type == "subscribe" and channel_id:
-            builder.row(InlineKeyboardButton(
-                text="📢 Подписаться",
-                url=f"https://t.me/{channel_id.lstrip('@').lstrip('-100')}",
-            ))
-            builder.row(InlineKeyboardButton(text="🔍 Проверить подписку", callback_data=f"task:check:{task_id}"))
-        else:
-            builder.row(InlineKeyboardButton(text="✅ Проверить", callback_data=f"task:check:{task_id}"))
-    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu:tasks"))
+    builder.row(InlineKeyboardButton(text="➡️ Следующее задание", callback_data="menu:tasks"))
+    builder.row(InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu:main"))
     return builder.as_markup()
-
-
-def back_to_tasks_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="◀️ К заданиям", callback_data="menu:tasks")]]
-    )

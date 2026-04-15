@@ -1,15 +1,20 @@
+import asyncio
+
 from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
-from database.models import User
+from database.models import User, BotSettings
 from handlers.button_helper import answer_with_content, send_with_content
-from keyboards.botohub import build_botohub_wall_kb
+from keyboards.botohub import build_combined_wall_kb
 from keyboards.main import main_menu_kb
 from config import config
 from services.referral import grant_referral_reward_if_pending
+from services.flyer import get_flyer_tasks, check_subscription
+from services.piarflow import get_piarflow_tasks
+from services.subgram import get_subgram_sponsors
 from utils.botohub_api import check_botohub
 
 router = Router()
@@ -78,34 +83,71 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
     if is_new and user.referrer_id:
         await message.answer("👋 Добро пожаловать! Ты перешёл по реферальной ссылке.")
 
-    # ── BotoHub subscription wall ──
+    # ── Combined subscription wall (all integrations) ──
     if message.from_user.id not in config.ADMIN_IDS:
-        result = await check_botohub(message.from_user.id)
-        if not result["completed"] and not result["skip"]:
-            # Cache sponsor count for referral reward calculation
-            from database.models import BotSettings
-            count_str = str(len(result["tasks"]))
-            cached = await session.get(BotSettings, "botohub_sponsors_count")
-            if cached:
-                cached.value = count_str
-            else:
-                session.add(BotSettings(key="botohub_sponsors_count", value=count_str))
-            await session.commit()
+        user_id = message.from_user.id
+        language_code = message.from_user.language_code
 
+        # Read enabled flags and counts from DB
+        async def _flag(k, default):
+            r = await session.get(BotSettings, k)
+            return (r.value == "1") if r else default
+
+        # Read flags sequentially (same SQLAlchemy session — cannot use asyncio.gather)
+        bh_on = await _flag("integration_botohub_enabled", True)
+        fl_on = await _flag("integration_flyer_enabled", True)
+        pf_on = await _flag("integration_piarflow_enabled", False)
+        sg_on = await _flag("integration_subgram_enabled", False)
+
+        pf_count_row = await session.get(BotSettings, "piarflow_count")
+        pf_count = int(pf_count_row.value) if pf_count_row and pf_count_row.value else 5
+        sg_count_row = await session.get(BotSettings, "subgram_count")
+        sg_count = int(sg_count_row.value) if sg_count_row and sg_count_row.value else 5
+
+        async def _skip_bh(): return {"completed": True, "skip": True, "tasks": []}
+        async def _skip_list(): return []
+        async def _skip_bool(): return True
+
+        # External API calls — safe to run in parallel
+        bh_result, flyer_tasks, pf_result, sg_sponsors, flyer_done = (
+            await asyncio.gather(
+                check_botohub(user_id) if bh_on else _skip_bh(),
+                get_flyer_tasks(user_id, language_code) if fl_on else _skip_list(),
+                get_piarflow_tasks(user_id, pf_count) if pf_on else _skip_bh(),
+                get_subgram_sponsors(user_id, sg_count) if sg_on else _skip_list(),
+                check_subscription(user_id, language_code) if fl_on else _skip_bool(),
+            )
+        )
+
+        bh_pending = bh_on and not bh_result["completed"] and not bh_result["skip"]
+        flyer_pending = fl_on and not flyer_done and bool(flyer_tasks)
+        pf_pending = pf_on and not pf_result["completed"] and not pf_result["skip"]
+
+        has_anything = bh_pending or flyer_pending or pf_pending or bool(sg_sponsors)
+
+        if has_anything:
+            # Cache BotoHub sponsor count for referral reward calculation
+            if bh_pending:
+                count_str = str(len(bh_result["tasks"]))
+                cached = await session.get(BotSettings, "botohub_sponsors_count")
+                if cached:
+                    cached.value = count_str
+                else:
+                    session.add(BotSettings(key="botohub_sponsors_count", value=count_str))
+                await session.commit()
+
+            kb = build_combined_wall_kb(
+                bh_result["tasks"] if bh_pending else [],
+                flyer_tasks if flyer_pending else [],
+                [],
+                piarflow_tasks=pf_result["tasks"] if pf_pending else [],
+                subgram_sponsors=sg_sponsors,
+            )
             await message.answer(
                 "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>",
-                reply_markup=build_botohub_wall_kb(result["tasks"]),
+                reply_markup=kb,
             )
             return
-
-        # ── Flyer subscription wall (after BotoHub passes) ──
-        from services.flyer import check_subscription
-        subscribed = await check_subscription(
-            user_id=message.from_user.id,
-            language_code=message.from_user.language_code,
-        )
-        if not subscribed:
-            return  # Flyer sends the wall automatically
 
     # User passed both subscription walls — give referral reward if still pending
     await grant_referral_reward_if_pending(user, session, message.bot)

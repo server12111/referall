@@ -10,15 +10,17 @@ from config import config
 logger = logging.getLogger(__name__)
 
 _client = None
+_client_key: str | None = None
 
 
 def _get_client():
-    """Return a cached Flyer client, or None if FLYER_KEY is not set or flyerapi not installed."""
+    """Return a cached Flyer client, re-creating it if the key changed."""
+    global _client, _client_key
     if FlyerClient is None or not config.FLYER_KEY:
         return None
-    global _client
-    if _client is None:
+    if _client is None or _client_key != config.FLYER_KEY:
         _client = FlyerClient(config.FLYER_KEY)
+        _client_key = config.FLYER_KEY
     return _client
 
 
@@ -34,6 +36,26 @@ async def get_channels_count() -> int:
     except Exception as exc:
         logger.warning("Flyer get_me error: %s", exc)
         return 0
+
+
+async def get_flyer_tasks(user_id: int, language_code: str | None = None) -> list[dict]:
+    """
+    Return the list of incomplete Flyer tasks for the user.
+    Each dict contains channel info (url/link/invite_link field).
+    Returns [] if FLYER_KEY not set, service unavailable, or all tasks done.
+    """
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        tasks = await client.get_tasks(user_id=user_id, language_code=language_code or "en")
+        result = tasks or []
+        if result:
+            logger.debug("Flyer tasks sample for user %s: %s", user_id, result[:1])
+        return result
+    except Exception as exc:
+        logger.warning("Flyer get_tasks error for user %s: %s", user_id, exc)
+        return []
 
 
 async def check_subscription(user_id: int, language_code: str | None = None) -> bool:

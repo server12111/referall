@@ -12,7 +12,8 @@ from aiogram.types import ErrorEvent
 from config import config
 from database import init_db
 from handlers import routers
-from middlewares import SessionMiddleware, BotHubMiddleware, FlyerMiddleware, RegisteredUserMiddleware
+from middlewares import SessionMiddleware, RegisteredUserMiddleware
+from middlewares.register import CombinedWallMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,13 +28,11 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=SQLStorage("fsm_storage.db"))
 
-    # Middlewares — order matters: session → botohub → flyer → user check
+    # Middlewares — order matters: session → combined wall → user check
     dp.message.middleware(SessionMiddleware())
     dp.callback_query.middleware(SessionMiddleware())
-    dp.message.middleware(BotHubMiddleware())
-    dp.callback_query.middleware(BotHubMiddleware())
-    dp.message.middleware(FlyerMiddleware())
-    dp.callback_query.middleware(FlyerMiddleware())
+    dp.message.middleware(CombinedWallMiddleware())
+    dp.callback_query.middleware(CombinedWallMiddleware())
     dp.message.middleware(RegisteredUserMiddleware())
     dp.callback_query.middleware(RegisteredUserMiddleware())
 
