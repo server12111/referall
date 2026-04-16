@@ -279,6 +279,7 @@ def integrations_kb(statuses: dict) -> InlineKeyboardMarkup:
     _row("Flyer", "flyer")
     _row("PiarFlow", "piarflow")
     _row("Subgram", "subgram")
+    _row("Linkni (Tgrass)", "linkni")
     _row("GramAds (реклама)", "gramads")
 
     builder.row(InlineKeyboardButton(text="📊 Кількість спонсорів", callback_data="integration:counts"))

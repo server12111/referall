@@ -2272,6 +2272,7 @@ _INTEGRATION_LABELS = {
     "flyer": "Flyer",
     "piarflow": "PiarFlow",
     "subgram": "Subgram",
+    "linkni": "Linkni (Tgrass)",
     "gramads": "GramAds",
 }
 
