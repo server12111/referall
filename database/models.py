@@ -99,6 +99,15 @@ class LinkniCompletion(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class FlyerServiceCompletion(Base):
+    __tablename__ = "flyerservice_completions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    signature: Mapped[str] = mapped_column(String(512))
+    completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     __tablename__ = "game_sessions"
 

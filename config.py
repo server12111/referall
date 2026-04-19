@@ -16,6 +16,7 @@ class Config:
     ADMIN_CHANNEL_ID: int = int(os.getenv("ADMIN_CHANNEL_ID", "0"))
     BOTOHUB_KEY: str = os.getenv("BOTOHUB_KEY", "")
     FLYER_KEY: str = os.getenv("FLYER_KEY", "")
+    FLYERSERVICE_KEY: str = os.getenv("FLYERSERVICE_KEY", "")
     PIARFLOW_KEY: str = os.getenv("PIARFLOW_KEY", "")
     SUBGRAM_KEY: str = os.getenv("SUBGRAM_KEY", "")
     LINKNI_CODE: str = os.getenv("LINKNI_CODE", os.getenv("TGRASS_CODE", ""))
