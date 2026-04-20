@@ -1,14 +1,8 @@
-import re
-
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.engine import get_button_content
-
-
-def _strip_tgemoji(text: str) -> str:
-    """Remove <tg-emoji ...>fallback</tg-emoji> tags, keeping the fallback emoji."""
-    return re.sub(r'<tg-emoji[^>]*>([^<]*)</tg-emoji>', r'\1', text)
+from utils.emoji import strip_pe as _strip_tgemoji
 
 
 async def answer_with_content(

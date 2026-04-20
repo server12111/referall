@@ -50,3 +50,10 @@ def pe(text: str) -> str:
     for emoji, emoji_id in _MAP.items():
         text = text.replace(emoji, f'<tg-emoji emoji_id="{emoji_id}">{emoji}</tg-emoji>')
     return text
+
+
+import re as _re
+
+def strip_pe(text: str) -> str:
+    """Remove <tg-emoji> tags, keeping the fallback plain emoji."""
+    return _re.sub(r'<tg-emoji[^>]*>([^<]*)</tg-emoji>', r'\1', text)

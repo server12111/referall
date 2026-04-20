@@ -8,7 +8,7 @@ from handlers.button_helper import answer_with_content
 from keyboards.main import back_to_menu_kb
 from config import config
 from database.engine import get_button_content
-from utils.emoji import pe
+from utils.emoji import pe, strip_pe
 
 router = Router()
 
@@ -61,7 +61,10 @@ async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User)
             await callback.message.delete()
         except Exception:
             pass
-        await callback.message.answer_photo(photo=content.photo_file_id, caption=text, parse_mode="HTML", reply_markup=kb)
+        try:
+            await callback.message.answer_photo(photo=content.photo_file_id, caption=text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await callback.message.answer_photo(photo=content.photo_file_id, caption=strip_pe(text), parse_mode="HTML", reply_markup=kb)
     else:
         try:
             await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
@@ -70,7 +73,10 @@ async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User)
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+            try:
+                await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                await callback.message.answer(strip_pe(text), parse_mode="HTML", reply_markup=kb)
     await callback.answer()
 
 
