@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 from database.models import User, Transfer
 from handlers.button_helper import answer_with_content, safe_edit
 from keyboards.main import profile_kb, back_to_menu_kb
+from utils.emoji import pe
 
 router = Router()
 
@@ -27,7 +28,7 @@ class TransferStates(StatesGroup):
 @router.callback_query(lambda c: c.data == "menu:profile")
 async def cb_profile(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     uname = f"@{db_user.username}" if db_user.username else "не указан"
-    default_text = (
+    default_text = pe(
         "👤 <b>Профиль</b>\n\n"
         f"Имя: {db_user.first_name}\n"
         f"ID: <code>{db_user.user_id}</code>\n"

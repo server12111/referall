@@ -8,6 +8,7 @@ from sqlalchemy import text
 from database.models import User
 from handlers.button_helper import answer_with_content, safe_edit
 from keyboards.top import top_menu_kb, top_period_kb, top_result_kb
+from utils.emoji import pe
 
 router = Router()
 
@@ -31,7 +32,7 @@ def _format_pos(pos: int) -> str:
 
 @router.callback_query(lambda c: c.data == "menu:top")
 async def cb_top_menu(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
-    default_text = (
+    default_text = pe(
         "🏆 <b>Топ пользователей</b>\n\n"
         f"💰 Ваш баланс: <b>{db_user.stars_balance:.2f} ⭐</b>\n"
         f"👥 Ваши рефералы: <b>{db_user.referrals_count}</b>\n\n"
@@ -48,11 +49,11 @@ async def cb_top_type(callback: CallbackQuery, session: AsyncSession, db_user: U
     top_type = callback.data.split(":")[2]  # "refs" or "stars"
 
     if top_type == "refs":
-        title = "👥 Топ по рефералам"
+        title = pe("👥 Топ по рефералам")
         desc = "Рейтинг по количеству приглашённых пользователей."
         key = "top:refs"
     else:
-        title = "⭐ Топ по звёздам"
+        title = pe("⭐ Топ по звёздам")
         desc = "Рейтинг по балансу звёзд."
         key = "top:stars"
 
@@ -108,7 +109,7 @@ async def cb_top_refs(callback: CallbackQuery, session: AsyncSession, db_user: U
             ) sub WHERE sub.cnt > :my_cnt
         """), {"start": start, "my_cnt": user_cnt})).scalar()
 
-    lines = [f"👥 <b>Топ по рефералам — {period_label}</b>\n"]
+    lines = [pe(f"👥 <b>Топ по рефералам — {period_label}</b>\n")]
 
     if not rows:
         lines.append("Пока нет данных за этот период.")
@@ -146,7 +147,7 @@ async def cb_top_stars(callback: CallbackQuery, session: AsyncSession, db_user: 
         SELECT COUNT(*) + 1 FROM users WHERE stars_balance > :bal
     """), {"bal": db_user.stars_balance})).scalar()
 
-    lines = [f"⭐ <b>Топ по звёздам — {period_label}</b>\n"]
+    lines = [pe(f"⭐ <b>Топ по звёздам — {period_label}</b>\n")]
 
     if not rows:
         lines.append("Пока нет данных.")

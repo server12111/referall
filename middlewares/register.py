@@ -81,6 +81,7 @@ class CombinedWallMiddleware(BaseMiddleware):
             from utils.botohub_api import check_botohub
             from services.flyer import get_flyer_tasks
             from services.piarflow import get_piarflow_tasks
+            from utils.emoji import pe
 
             session2 = data.get("session")
             _bh_on = True
@@ -113,7 +114,7 @@ class CombinedWallMiddleware(BaseMiddleware):
                 pf_pending = not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
                 if pf_pending:
                     from keyboards.botohub import build_combined_wall_kb
-                    wall_text = "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"
+                    wall_text = pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>")
                     wall_kb = build_combined_wall_kb([], [], [], piarflow_tasks=pf_result["tasks"])
                     if isinstance(event, CallbackQuery):
                         try:

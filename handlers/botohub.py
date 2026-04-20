@@ -16,6 +16,7 @@ from services.piarflow import get_piarflow_tasks
 from services.subgram import get_subgram_sponsors, check_subgram_subscriptions
 from services.gramads import show_gramads
 from utils.botohub_api import check_botohub
+from utils.emoji import pe
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ async def cb_combined_wall_check(callback: CallbackQuery, session: AsyncSession)
             subgram_sponsors=sg_sponsors if not sg_done else [],
         )
         await callback.message.answer(
-            "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>",
+            pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"),
             reply_markup=bh_kb,
         )
         logger.info("CombinedWall: user %s sent to BotoHub wall (stage 3)", user_id)

@@ -10,6 +10,7 @@ from database.models import User, BotSettings
 from handlers.button_helper import answer_with_content
 from keyboards.main import back_to_menu_kb
 from config import config
+from utils.emoji import pe
 
 router = Router()
 
@@ -88,7 +89,7 @@ async def cb_bonus(callback: CallbackQuery, session: AsyncSession, db_user: User
     db_user.last_bonus_at = now
     await session.commit()
 
-    bonus_text = (
+    bonus_text = pe(
         f"🎁 Вам начислено <b>{amount} ⭐</b> бонуса!\n\n"
         f"Текущий баланс: <b>{db_user.stars_balance:.2f} ⭐</b>"
     )
@@ -138,7 +139,7 @@ async def cb_sponsors_check_bonus(callback: CallbackQuery, session: AsyncSession
     db_user.last_bonus_at = now
     await session.commit()
 
-    bonus_text = (
+    bonus_text = pe(
         f"🎁 Вам начислено <b>{amount} ⭐</b> бонуса!\n\n"
         f"Текущий баланс: <b>{db_user.stars_balance:.2f} ⭐</b>"
     )

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from database.models import User, Task, TaskCompletion, LinkniCompletion, FlyerServiceCompletion
+from utils.emoji import pe
 from handlers.button_helper import safe_edit
 from keyboards.main import task_single_kb, task_done_kb, back_to_menu_kb
 
@@ -84,7 +85,7 @@ async def _show_next_task(
     if next_type is None:
         await safe_edit(
             callback,
-            "📋 <b>Задания</b>\n\nВсе задания выполнены! Заходи позже.",
+            pe("📋 <b>Задания</b>\n\nВсе задания выполнены! Заходи позже."),
             back_to_menu_kb(),
         )
         await callback.answer()
@@ -97,7 +98,7 @@ async def _show_next_task(
         if state:
             await state.update_data(fs_signature=sig, current_task_type="flyerservice", current_task_id=sig)
         kb = task_single_kb("flyerservice", sig, url)
-        text = (
+        text = pe(
             f"📋 <b>Задание</b>\n\n"
             f"🔗 <b>{next_task.get('name', 'Подписка на канал')}</b>\n\n"
             f"Выполни задание и нажми «Проверить».\n\n"
@@ -107,7 +108,7 @@ async def _show_next_task(
         if state:
             await state.update_data(current_task_type="linkni", current_task_id="linkni")
         kb = task_single_kb("linkni", "0", next_task["url"])
-        text = (
+        text = pe(
             f"📋 <b>Задание</b>\n\n"
             f"🔗 <b>{next_task['title']}</b>\n\n"
             f"Подпишись на канал и нажми «Проверить».\n\n"
@@ -126,7 +127,7 @@ async def _show_next_task(
         extra = ""
         if task.task_type == "referrals" and task.target_value:
             extra = f"\n🎯 Нужно рефералов: <b>{task.target_value}</b> (у тебя: <b>{db_user.referrals_count}</b>)"
-        text = (
+        text = pe(
             f"📋 <b>{task.title}</b>\n\n"
             f"{task.description}{extra}\n\n"
             f"💰 Награда: <b>{TASK_REWARD} ⭐</b>"

@@ -8,6 +8,7 @@ from handlers.button_helper import answer_with_content
 from keyboards.main import back_to_menu_kb
 from config import config
 from database.engine import get_button_content
+from utils.emoji import pe
 
 router = Router()
 
@@ -36,11 +37,11 @@ async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User)
             f"Чем больше спонсоров назначит бот — тем выше твоя награда! 🚀"
         )
 
-    ref_suffix = (
+    ref_suffix = pe(
         f"👥 Ты пригласил: <b>{db_user.referrals_count}</b> чел.\n\n"
         f"🔗 <b>Твоя реферальная ссылка:</b>\n<code>{ref_link}</code>"
     )
-    default_body = (
+    default_body = pe(
         "⭐ <b>Заработать звёзды</b>\n\n"
         "Приглашай друзей — получай <b>Telegram Stars</b> за каждого!\n\n"
         f"{reward_line}\n\n"

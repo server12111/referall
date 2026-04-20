@@ -16,6 +16,7 @@ from services.flyer import get_flyer_tasks
 from services.piarflow import get_piarflow_tasks
 from services.subgram import get_subgram_sponsors
 from utils.botohub_api import check_botohub
+from utils.emoji import pe
 
 router = Router()
 
@@ -159,7 +160,7 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
     # User passed both subscription walls — give referral reward if still pending
     await grant_referral_reward_if_pending(user, session, message.bot)
 
-    default_text = (
+    default_text = pe(
         "👋 <b>Добро пожаловать!</b>\n\n"
         "Здесь ты зарабатываешь настоящие <b>Telegram Stars ⭐</b>\n\n"
         "🚀 <b>Как заработать:</b>\n"
@@ -175,7 +176,7 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
 
 @router.callback_query(lambda c: c.data == "menu:main")
 async def cb_main_menu(callback: CallbackQuery, session: AsyncSession) -> None:
-    default_text = (
+    default_text = pe(
         "🏠 <b>Главное меню</b>\n\n"
         "Здесь ты зарабатываешь настоящие <b>Telegram Stars ⭐</b>\n\n"
         "🚀 <b>Как заработать:</b>\n"

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User, Withdrawal, BotSettings
 from handlers.button_helper import answer_with_content, safe_edit
+from utils.emoji import pe
 from keyboards.withdraw import withdraw_amounts_kb, captcha_cancel_kb, withdraw_success_kb
 from keyboards.admin import withdrawal_actions_kb
 from keyboards.main import back_to_menu_kb, main_menu_kb
@@ -56,7 +57,7 @@ async def cb_withdraw(callback: CallbackQuery, session: AsyncSession, db_user: U
         await callback.answer()
         return
 
-    default_text = (
+    default_text = pe(
         f"💰 <b>Вывод звёзд</b>\n\n"
         f"Твой баланс: <b>{db_user.stars_balance:.2f} ⭐</b>\n\n"
         f"Выбери сумму для вывода:"
