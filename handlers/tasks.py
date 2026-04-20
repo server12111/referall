@@ -45,7 +45,7 @@ async def _show_next_task(
     )).scalars().all())
 
     # Skipped this session (stored in FSM)
-    fsm_data = (await state.get_data()) if state else {}
+    fsm_data = ((await state.get_data()) or {}) if state else {}
     skipped_bot = set(fsm_data.get("skipped_bot", []))
     skipped_fs = set(fsm_data.get("skipped_fs", []))
     linkni_skipped = fsm_data.get("linkni_skipped", False)
