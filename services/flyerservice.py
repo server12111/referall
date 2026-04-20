@@ -33,10 +33,16 @@ async def get_flyerservice_tasks(user_id: int, language_code: str | None = None)
                     logger.warning("FlyerService get_tasks HTTP %s for user %s", resp.status, user_id)
                     return []
                 data = await resp.json()
-                if not isinstance(data, list):
+                if isinstance(data, dict):
+                    tasks = data.get("result") or []
+                elif isinstance(data, list):
+                    tasks = data
+                else:
                     return []
-                logger.debug("FlyerService tasks for user %s: %s", user_id, data[:1])
-                return data
+                if not isinstance(tasks, list):
+                    return []
+                logger.debug("FlyerService tasks for user %s: %s", user_id, tasks[:1])
+                return tasks
     except Exception as exc:
         logger.warning("FlyerService get_tasks error for user %s: %s", user_id, exc)
         return []
