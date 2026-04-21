@@ -2,7 +2,6 @@ import asyncio
 import logging
 import traceback
 
-from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -15,7 +14,6 @@ from database import init_db
 from handlers import routers
 from middlewares import SessionMiddleware, RegisteredUserMiddleware
 from middlewares.register import CombinedWallMiddleware
-from webhooks.flyerservice import handle as fs_webhook_handle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,16 +46,9 @@ async def main() -> None:
         dp.include_router(router)
 
     from services.retention import retention_loop
+    from services.flyerservice import flyerservice_poll_loop
     asyncio.create_task(retention_loop(bot))
-
-    # Webhook HTTP server for FlyerService callbacks
-    app = web.Application()
-    app.router.add_post("/flyerservice/webhook", fs_webhook_handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", config.WEBHOOK_PORT)
-    await site.start()
-    logger.info("Webhook server listening on port %s", config.WEBHOOK_PORT)
+    asyncio.create_task(flyerservice_poll_loop())
 
     logger.info("Bot started")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
