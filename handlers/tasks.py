@@ -25,7 +25,6 @@ async def _show_next_task(
 ) -> None:
     """Find next uncompleted task and display it (one-at-a-time, interleaved Linkni:Bot:FlyerService)."""
     from services.linkni import get_linkni_task_url, linkni_has_sponsors
-    from services.flyerservice import get_flyerservice_tasks
 
     user_id = db_user.user_id
 
@@ -39,15 +38,9 @@ async def _show_next_task(
         select(LinkniCompletion.entry_key).where(LinkniCompletion.user_id == user_id)
     )).scalars().all())
 
-    # Completed FlyerService signatures
-    done_fs_sigs = set((await session.execute(
-        select(FlyerServiceCompletion.signature).where(FlyerServiceCompletion.user_id == user_id)
-    )).scalars().all())
-
     # Skipped this session (stored in FSM)
     fsm_data = ((await state.get_data()) or {}) if state else {}
     skipped_bot = set(fsm_data.get("skipped_bot", []))
-    skipped_fs = set(fsm_data.get("skipped_fs", []))
     linkni_skipped = fsm_data.get("linkni_skipped", False)
 
     # Active bot tasks not yet completed or skipped
@@ -61,18 +54,12 @@ async def _show_next_task(
     linkni_available = bool(linkni_url) and not linkni_skipped and await linkni_has_sponsors(user_id)
     pending_linkni = [{"url": linkni_url, "title": "Подписка на канал"}] if linkni_available else []
 
-    # FlyerService tasks not yet locally completed or skipped
-    fs_tasks_raw = await get_flyerservice_tasks(user_id)
-    pending_fs = [t for t in fs_tasks_raw if t.get("signature") not in done_fs_sigs and t.get("signature") not in skipped_fs]
-
-    # Interleave round-robin across three pools
-    total_done = len(done_bot_ids) + len(done_linkni_keys) + len(done_fs_sigs)
+    # Interleave round-robin across two pools
+    total_done = len(done_bot_ids) + len(done_linkni_keys)
     pools_order = [
-        ("flyerservice", pending_fs),
         ("linkni", pending_linkni),
         ("bot", pending_bot),
     ]
-    # Rotate based on completed count so pools alternate
     idx = total_done % len(pools_order)
     ordered = pools_order[idx:] + pools_order[:idx]
 
@@ -153,10 +140,6 @@ async def cb_task_skip(callback: CallbackQuery, session: AsyncSession, db_user: 
         skipped = set(fsm_data.get("skipped_bot", []))
         skipped.add(int(task_id))
         await state.update_data(skipped_bot=list(skipped))
-    elif task_type == "flyerservice" and task_id:
-        skipped = set(fsm_data.get("skipped_fs", []))
-        skipped.add(task_id)
-        await state.update_data(skipped_fs=list(skipped))
     elif task_type == "linkni":
         await state.update_data(linkni_skipped=True)
 

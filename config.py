@@ -26,6 +26,7 @@ class Config:
     BONUS_COOLDOWN_HOURS: int = int(os.getenv("BONUS_COOLDOWN_HOURS", "24"))
     BONUS_MIN: float = float(os.getenv("BONUS_MIN", "0.5"))
     BONUS_MAX: float = float(os.getenv("BONUS_MAX", "1.0"))
+    WEBHOOK_PORT: int = int(os.getenv("WEBHOOK_PORT", "8080"))
 
 
 config = Config()
