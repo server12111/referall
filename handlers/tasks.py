@@ -48,8 +48,8 @@ async def _show_next_task(
         url = config.FLYERSERVICE_URL or None
         kb = task_single_kb("flyerservice", "0", url)
         text = pe(
-            f"📋 <b>Задание FlyerService</b>\n\n"
-            f"🔗 Выполни задания в FlyerService и нажми «Проверить».\n\n"
+            f"📋 <b>Задание</b>\n\n"
+            f"🔗 Выполни задания и нажми «Проверить».\n\n"
             f"💰 Награда: <b>{FS_REWARD} ⭐ за каждое выполненное задание</b>"
         )
         await safe_edit(callback, text, kb)
