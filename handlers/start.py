@@ -15,6 +15,7 @@ from services.referral import grant_referral_reward_if_pending, notify_referrer_
 from services.flyer import get_flyer_tasks
 from services.piarflow import get_piarflow_tasks
 from services.subgram import get_subgram_sponsors
+from services.tgrass import check_tgrass_subscription, get_tgrass_wall_url
 from utils.botohub_api import check_botohub
 from utils.emoji import pe
 
@@ -95,11 +96,11 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
             r = await session.get(BotSettings, k)
             return (r.value == "1") if r else default
 
-        # Read flags sequentially (same SQLAlchemy session — cannot use asyncio.gather)
         bh_on = await _flag("integration_botohub_enabled", True)
         fl_on = await _flag("integration_flyer_enabled", True)
         pf_on = await _flag("integration_piarflow_enabled", False)
         sg_on = await _flag("integration_subgram_enabled", False)
+        tg_on = await _flag("integration_tgrass_enabled", False)
 
         pf_count_row = await session.get(BotSettings, "piarflow_count")
         pf_count = int(pf_count_row.value) if pf_count_row and pf_count_row.value else 5
@@ -107,53 +108,36 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
         sg_count = int(sg_count_row.value) if sg_count_row and sg_count_row.value else 5
 
         async def _skip_bh(): return {"completed": True, "skip": True, "tasks": []}
+        async def _skip_pf(): return {"completed": True, "skip": True, "tasks": []}
         async def _skip_list(): return []
         async def _skip_bool(): return True
 
-        # External API calls — safe to run in parallel
-        bh_result, flyer_tasks, pf_result, sg_sponsors = (
-            await asyncio.gather(
-                check_botohub(user_id) if bh_on else _skip_bh(),
-                get_flyer_tasks(user_id, language_code) if fl_on else _skip_list(),
-                get_piarflow_tasks(user_id, pf_count) if pf_on else _skip_bh(),
-                get_subgram_sponsors(user_id, sg_count) if sg_on else _skip_list(),
-            )
+        # Check all integrations in parallel — single wall
+        tgrass_ok, sg_sponsors, pf_result, bh_result, flyer_tasks = await asyncio.gather(
+            check_tgrass_subscription(user_id) if tg_on else _skip_bool(),
+            get_subgram_sponsors(user_id, sg_count) if sg_on else _skip_list(),
+            get_piarflow_tasks(user_id, pf_count) if pf_on else _skip_pf(),
+            check_botohub(user_id) if bh_on else _skip_bh(),
+            get_flyer_tasks(user_id, language_code) if fl_on else _skip_list(),
         )
 
-        flyer_pending = fl_on and bool(flyer_tasks)
-
-        # Wall 1: PiarFlow
+        tgrass_url = get_tgrass_wall_url() if (tg_on and not tgrass_ok) else None
         pf_pending = pf_on and not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
-        if pf_pending:
-            kb = build_combined_wall_kb([], [], [], piarflow_tasks=pf_result["tasks"])
-            await message.answer(
-                "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>",
-                reply_markup=kb,
-            )
-            return
-
-        # Wall 2: BotoHub + Flyer + Subgram
         bh_pending = bh_on and not bh_result["completed"] and not bh_result["skip"] and bool(bh_result["tasks"])
-        has_wall3 = bh_pending or flyer_pending or bool(sg_sponsors)
+        flyer_pending = fl_on and bool(flyer_tasks)
+        sg_pending = sg_on and bool(sg_sponsors)
 
-        if has_wall3:
-            if bh_pending:
-                count_str = str(len(bh_result["tasks"]))
-                cached = await session.get(BotSettings, "botohub_sponsors_count")
-                if cached:
-                    cached.value = count_str
-                else:
-                    session.add(BotSettings(key="botohub_sponsors_count", value=count_str))
-                await session.commit()
-
+        if tgrass_url or sg_pending or pf_pending or bh_pending or flyer_pending:
             kb = build_combined_wall_kb(
                 bh_result["tasks"] if bh_pending else [],
                 flyer_tasks if flyer_pending else [],
                 [],
-                subgram_sponsors=sg_sponsors,
+                piarflow_tasks=pf_result["tasks"] if pf_pending else [],
+                subgram_sponsors=sg_sponsors if sg_pending else [],
+                tgrass_url=tgrass_url,
             )
             await message.answer(
-                "📢 <b>Подпишитесь на каналы ниже і нажмите «Я подписался».</b>",
+                pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"),
                 reply_markup=kb,
             )
             return

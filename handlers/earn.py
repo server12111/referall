@@ -1,5 +1,5 @@
 from aiogram import Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -11,6 +11,24 @@ from database.engine import get_button_content
 from utils.emoji import pe, strip_pe
 
 router = Router()
+
+
+def _earn_kb(user_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(
+            text="📺 Смотреть рекламу (BotoHub)",
+            url=f"https://t.me/botohub_views_bot?start={user_id}",
+            style="primary",
+            icon_custom_emoji_id="5271604874419647061",
+        )],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="menu:main",
+            style="danger",
+            icon_custom_emoji_id="5318991467639756533",
+        )],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 @router.callback_query(lambda c: c.data == "menu:earn")
@@ -34,13 +52,14 @@ async def cb_earn(callback: CallbackQuery, session: AsyncSession, db_user: User)
         "• Друг должен запустить бота по твоей ссылке\n"
         "• Один пользователь засчитывается только один раз\n"
         "• Выплата — мгновенно после регистрации\n\n"
+        "📺 Также можешь заработать звёзды, просматривая рекламу!\n\n"
     )
 
     content = await get_button_content(session, "menu:earn")
     has_photo = bool(content and content.photo_file_id)
     text = ((content.text if content and content.text else None) or default_body) + ref_suffix
 
-    kb = back_to_menu_kb()
+    kb = _earn_kb(db_user.user_id)
     if has_photo:
         try:
             await callback.message.delete()
@@ -70,22 +89,26 @@ async def cb_referrals(callback: CallbackQuery, session: AsyncSession, db_user: 
     from sqlalchemy import asc
     result = await session.execute(
         select(User)
-        .where(User.referrer_id == db_user.user_id, User.referral_reward_pending == False)
+        .where(User.referrer_id == db_user.user_id)
         .order_by(asc(User.created_at))
     )
-    refs = result.scalars().all()
+    all_refs = result.scalars().all()
+
+    completed = [r for r in all_refs if not r.referral_reward_pending]
+    pending = [r for r in all_refs if r.referral_reward_pending]
 
     lines = []
-    for i, ref in enumerate(refs[:20], start=1):
+    for i, ref in enumerate(completed[:20], start=1):
         name = ref.first_name or "—"
         uname = f" @{ref.username}" if ref.username else ""
         date_str = ref.created_at.strftime("%d.%m.%Y") if ref.created_at else "—"
-        lines.append(f"{i}. {name}{uname} — {date_str}")
+        lines.append(f"{i}. {name}{uname} — {date_str} ✅")
 
     body = "\n".join(lines) if lines else "Рефералов пока нет."
-    default_text = (
+    pending_line = f"\n⏳ Ожидают подтверждения: <b>{len(pending)}</b>" if pending else ""
+    default_text = pe(
         f"👥 <b>Мои рефералы</b>\n\n"
-        f"Всего: <b>{db_user.referrals_count}</b>\n\n"
+        f"Всего: <b>{len(all_refs)}</b> | Подтверждено: <b>{len(completed)}</b>{pending_line}\n\n"
         f"{body}"
     )
     await answer_with_content(callback, session, "menu:referrals", default_text, back_to_menu_kb())

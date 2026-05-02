@@ -18,14 +18,32 @@ def build_combined_wall_kb(
     piarflow_tasks: list[str] | None = None,
     subgram_sponsors: list[dict] | None = None,
     linkni_url: str | None = None,
+    tgrass_url: str | None = None,
 ) -> InlineKeyboardMarkup:
     buttons = []
     i = 1
 
+    # TGrass first
+    if tgrass_url:
+        buttons.append([InlineKeyboardButton(text="🌿 TGrass — подписаться", url=tgrass_url, style="primary", icon_custom_emoji_id="5271604874419647061")])
+
+    # Subgram second
+    for sp in (subgram_sponsors or []):
+        label = sp.get("button_text") or sp.get("title") or f"Канал {i}"
+        buttons.append([InlineKeyboardButton(text=label, url=sp["link"], style="primary", icon_custom_emoji_id="5370599459661045441")])
+        i += 1
+
+    # PiarFlow third
+    for url in (piarflow_tasks or []):
+        buttons.append([InlineKeyboardButton(text=f"Канал {i}", url=url, style="primary", icon_custom_emoji_id="5370599459661045441")])
+        i += 1
+
+    # BotoHub fourth
     for url in (botohub_tasks or []):
         buttons.append([InlineKeyboardButton(text=f"Канал {i}", url=url, style="primary", icon_custom_emoji_id="5370599459661045441")])
         i += 1
 
+    # Flyer fifth
     for task in (flyer_tasks or []):
         url = (
             task.get("url")
@@ -37,15 +55,6 @@ def build_combined_wall_kb(
         if url:
             buttons.append([InlineKeyboardButton(text=f"Канал {i}", url=url, style="primary", icon_custom_emoji_id="5370599459661045441")])
             i += 1
-
-    for url in (piarflow_tasks or []):
-        buttons.append([InlineKeyboardButton(text=f"Канал {i}", url=url, style="primary", icon_custom_emoji_id="5370599459661045441")])
-        i += 1
-
-    for sp in (subgram_sponsors or []):
-        label = sp.get("button_text") or sp.get("title") or f"Канал {i}"
-        buttons.append([InlineKeyboardButton(text=label, url=sp["link"], style="primary", icon_custom_emoji_id="5370599459661045441")])
-        i += 1
 
     for sp in (custom_sponsors or []):
         buttons.append([InlineKeyboardButton(text=sp['title'], url=sp["link"], style="primary", icon_custom_emoji_id="5370599459661045441")])

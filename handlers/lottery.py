@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 from database.models import User, Lottery, LotteryTicket
 from handlers.button_helper import safe_edit
 from keyboards.lottery import lottery_menu_kb
+from utils.emoji import pe
 
 router = Router()
 
@@ -32,7 +33,7 @@ async def _get_user_ticket_count(session: AsyncSession, lottery_id: int, user_id
 
 
 def _lottery_text(lottery: Lottery, user_tickets: int, balance: float) -> str:
-    return (
+    return pe(
         "🎟 <b>Лотерея</b>\n\n"
         f"💰 <b>Призовой пул: {lottery.prize_pool:.2f} ⭐</b>\n"
         f"🎫 Продано билетов: <b>{lottery.tickets_sold}</b>\n\n"
@@ -52,7 +53,7 @@ async def cb_lottery(callback: CallbackQuery, session: AsyncSession, db_user: Us
     if lottery is None:
         await safe_edit(
             callback,
-            "🎟 <b>Лотерея</b>\n\nЛотерея пока не запущена. Ожидайте объявления!",
+            pe("🎟 <b>Лотерея</b>\n\nЛотерея пока не запущена. Ожидайте объявления!"),
             lottery_menu_kb(False),
         )
         await callback.answer()
@@ -104,7 +105,7 @@ async def cb_lottery_buy(callback: CallbackQuery, session: AsyncSession, db_user
 
     await safe_edit(
         callback,
-        "✅ <b>Билет куплен!</b>\n\n" + _lottery_text(lottery, user_tickets, db_user.stars_balance),
+        pe("✅ <b>Билет куплен!</b>\n\n") + _lottery_text(lottery, user_tickets, db_user.stars_balance),
         lottery_menu_kb(can_buy),
     )
     await callback.answer(f"✅ Билет куплен! (-{TICKET_PRICE:.0f} ⭐)")

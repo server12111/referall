@@ -81,13 +81,18 @@ class CombinedWallMiddleware(BaseMiddleware):
             from utils.botohub_api import check_botohub
             from services.flyer import get_flyer_tasks
             from services.piarflow import get_piarflow_tasks
+            from services.subgram import get_subgram_sponsors
+            from services.tgrass import check_tgrass_subscription, get_tgrass_wall_url
             from utils.emoji import pe
 
             session2 = data.get("session")
             _bh_on = True
             _fl_on = True
             _pf_on = False
+            _sg_on = False
+            _tg_on = False
             _pf_count = 5
+            _sg_count = 5
             if session2:
                 from database.models import BotSettings as _BS2
 
@@ -98,51 +103,52 @@ class CombinedWallMiddleware(BaseMiddleware):
                 _bh_on = await _flag("integration_botohub_enabled", True)
                 _fl_on = await _flag("integration_flyer_enabled", True)
                 _pf_on = await _flag("integration_piarflow_enabled", False)
+                _sg_on = await _flag("integration_subgram_enabled", False)
+                _tg_on = await _flag("integration_tgrass_enabled", False)
                 _pf_row = await session2.get(_BS2, "piarflow_count")
                 if _pf_row and _pf_row.value:
                     _pf_count = int(_pf_row.value)
+                _sg_row = await session2.get(_BS2, "subgram_count")
+                if _sg_row and _sg_row.value:
+                    _sg_count = int(_sg_row.value)
 
             async def _skip_bh():
+                return {"completed": True, "skip": True, "tasks": []}
+
+            async def _skip_pf():
                 return {"completed": True, "skip": True, "tasks": []}
 
             async def _skip_list():
                 return []
 
-            # Stage 1: PiarFlow
-            if _pf_on:
-                pf_result = await get_piarflow_tasks(user.id, _pf_count)
-                pf_pending = not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
-                if pf_pending:
-                    from keyboards.botohub import build_combined_wall_kb
-                    wall_text = pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>")
-                    wall_kb = build_combined_wall_kb([], [], [], piarflow_tasks=pf_result["tasks"])
-                    if isinstance(event, CallbackQuery):
-                        try:
-                            await event.answer()
-                        except Exception:
-                            pass
-                        await event.message.answer(wall_text, reply_markup=wall_kb)
-                    else:
-                        await event.answer(wall_text, reply_markup=wall_kb)
-                    logger.info("CombinedWall: blocked user %s (stage 1 PiarFlow)", user.id)
-                    return
+            async def _skip_bool():
+                return True
 
-            # Stage 2: BotoHub + Flyer
-            bh_result, flyer_tasks = await asyncio.gather(
+            # Check all integrations in parallel — single wall message
+            tgrass_ok, sg_sponsors, pf_result, bh_result, flyer_tasks = await asyncio.gather(
+                check_tgrass_subscription(user.id) if _tg_on else _skip_bool(),
+                get_subgram_sponsors(user.id, _sg_count) if _sg_on else _skip_list(),
+                get_piarflow_tasks(user.id, _pf_count) if _pf_on else _skip_pf(),
                 check_botohub(user.id) if _bh_on else _skip_bh(),
                 get_flyer_tasks(user.id, user.language_code) if _fl_on else _skip_list(),
             )
 
+            tgrass_url = get_tgrass_wall_url() if (_tg_on and not tgrass_ok) else None
+            pf_pending = not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
             bh_pending = _bh_on and not bh_result["completed"] and not bh_result["skip"] and bool(bh_result["tasks"])
             flyer_pending = _fl_on and bool(flyer_tasks)
+            sg_pending = _sg_on and bool(sg_sponsors)
 
-            if bh_pending or flyer_pending:
+            if tgrass_url or sg_pending or pf_pending or bh_pending or flyer_pending:
                 from keyboards.botohub import build_combined_wall_kb
-                wall_text = "📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"
+                wall_text = pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>")
                 wall_kb = build_combined_wall_kb(
                     bh_result["tasks"] if bh_pending else [],
                     flyer_tasks if flyer_pending else [],
                     [],
+                    piarflow_tasks=pf_result["tasks"] if pf_pending else [],
+                    subgram_sponsors=sg_sponsors if sg_pending else [],
+                    tgrass_url=tgrass_url,
                 )
                 if isinstance(event, CallbackQuery):
                     try:
@@ -152,7 +158,10 @@ class CombinedWallMiddleware(BaseMiddleware):
                     await event.message.answer(wall_text, reply_markup=wall_kb)
                 else:
                     await event.answer(wall_text, reply_markup=wall_kb)
-                logger.info("CombinedWall: blocked user %s (stage 3 bh=%s, fl=%s)", user.id, bh_pending, flyer_pending)
+                logger.info(
+                    "CombinedWall: blocked user %s (tg=%s, sg=%s, pf=%s, bh=%s, fl=%s)",
+                    user.id, bool(tgrass_url), sg_pending, pf_pending, bh_pending, flyer_pending,
+                )
                 return
 
         except Exception as exc:

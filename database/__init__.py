@@ -11,6 +11,9 @@ async def init_db() -> None:
             "ALTER TABLE users ADD COLUMN referral_reward_pending BOOLEAN NOT NULL DEFAULT 0",
             "ALTER TABLE users ADD COLUMN last_seen_at DATETIME",
             "ALTER TABLE users ADD COLUMN last_notified_at DATETIME",
+            "ALTER TABLE tasks ADD COLUMN creator_id INTEGER",
+            "ALTER TABLE tasks ADD COLUMN creator_reward_rate REAL DEFAULT 0.0",
+            "ALTER TABLE tasks ADD COLUMN is_approved INTEGER DEFAULT 1",
         ]:
             try:
                 await conn.execute(text(stmt))

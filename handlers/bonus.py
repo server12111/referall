@@ -73,7 +73,7 @@ async def cb_bonus(callback: CallbackQuery, session: AsyncSession, db_user: User
             remaining = next_bonus - now
             hours, remainder = divmod(int(remaining.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
-            cooldown_text = (
+            cooldown_text = pe(
                 f"⏳ Бонус уже получен.\n\n"
                 f"Следующий бонус будет доступен через: <b>{hours:02d}:{minutes:02d}:{seconds:02d}</b>"
             )

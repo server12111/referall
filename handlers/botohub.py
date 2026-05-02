@@ -76,13 +76,12 @@ async def cb_botohub_check(callback: CallbackQuery, session: AsyncSession) -> No
 @router.callback_query(lambda c: c.data == "wall:check")
 async def cb_combined_wall_check(callback: CallbackQuery, session: AsyncSession) -> None:
     """
-    Unified check for the combined wall (all 5 integrations + GramAds).
-    Opens main menu only when ALL integrations confirm subscription.
+    Unified check for the combined wall (all integrations + GramAds).
+    Checks all integrations in parallel — single wall, no stages.
     """
     user_id = callback.from_user.id
     language_code = callback.from_user.language_code
 
-    # Read enabled flags and counts sequentially (same session)
     async def _flag(k, default):
         r = await session.get(BotSettings, k)
         return (r.value == "1") if r else default
@@ -91,6 +90,7 @@ async def cb_combined_wall_check(callback: CallbackQuery, session: AsyncSession)
     fl_on = await _flag("integration_flyer_enabled", True)
     pf_on = await _flag("integration_piarflow_enabled", False)
     sg_on = await _flag("integration_subgram_enabled", False)
+    tg_on = await _flag("integration_tgrass_enabled", False)
 
     pf_count_row = await session.get(BotSettings, "piarflow_count")
     pf_count = int(pf_count_row.value) if pf_count_row and pf_count_row.value else 5
@@ -98,55 +98,51 @@ async def cb_combined_wall_check(callback: CallbackQuery, session: AsyncSession)
     sg_count = int(sg_count_row.value) if sg_count_row and sg_count_row.value else 5
 
     async def _skip_bh(): return {"completed": True, "skip": True, "tasks": []}
+    async def _skip_pf(): return {"completed": True, "skip": True, "tasks": []}
+    async def _skip_list(): return []
     async def _skip_bool(): return True
 
-    async def _skip_list(): return []
+    from services.tgrass import check_tgrass_subscription, get_tgrass_wall_url
 
-    # Stage 1: Check PiarFlow
-    if pf_on:
-        pf_result = await get_piarflow_tasks(user_id, pf_count)
-        pf_pending = not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
-
-        if pf_pending:
-            await callback.answer(
-                "❌ Вы не подписались на все каналы.\nПодпишитесь и нажмите кнопку снова.",
-                show_alert=True,
-            )
-            pf_kb = build_combined_wall_kb([], [], [], piarflow_tasks=pf_result["tasks"])
-            try:
-                await callback.message.edit_reply_markup(reply_markup=pf_kb)
-            except Exception:
-                pass
-            logger.info("CombinedWall: user %s stage 1 (PiarFlow) not done", user_id)
-            return
-
-    # Stage 2: BotoHub + Flyer + Subgram
-    bh_result, flyer_tasks, sg_sponsors = await asyncio.gather(
+    # Check all in parallel — one wall
+    tgrass_ok, sg_sponsors, pf_result, bh_result, flyer_tasks = await asyncio.gather(
+        check_tgrass_subscription(user_id) if tg_on else _skip_bool(),
+        get_subgram_sponsors(user_id, sg_count) if sg_on else _skip_list(),
+        get_piarflow_tasks(user_id, pf_count) if pf_on else _skip_pf(),
         check_botohub(user_id) if bh_on else _skip_bh(),
         get_flyer_tasks(user_id, language_code) if fl_on else _skip_list(),
-        get_subgram_sponsors(user_id, sg_count) if sg_on else _skip_list(),
     )
 
-    bh_done = bh_result["completed"] or bh_result["skip"] or not bh_result["tasks"]
-    flyer_done = not bool(flyer_tasks)
-    sg_done = not bool(sg_sponsors)
+    tgrass_url = get_tgrass_wall_url() if (tg_on and not tgrass_ok) else None
+    pf_pending = not pf_result["completed"] and not pf_result["skip"] and bool(pf_result["tasks"])
+    bh_pending = bh_on and not bh_result["completed"] and not bh_result["skip"] and bool(bh_result["tasks"])
+    flyer_pending = fl_on and bool(flyer_tasks)
+    sg_pending = sg_on and bool(sg_sponsors)
 
-    if not (bh_done and flyer_done and sg_done):
-        await callback.answer("✅ Первый этап пройден!")
-        bh_kb = build_combined_wall_kb(
-            bh_result["tasks"] if not bh_done else [],
-            flyer_tasks if not flyer_done else [],
+    if tgrass_url or sg_pending or pf_pending or bh_pending or flyer_pending:
+        await callback.answer(
+            "❌ Вы не подписались на все каналы.\nПодпишитесь и нажмите кнопку снова.",
+            show_alert=True,
+        )
+        wall_kb = build_combined_wall_kb(
+            bh_result["tasks"] if bh_pending else [],
+            flyer_tasks if flyer_pending else [],
             [],
-            subgram_sponsors=sg_sponsors if not sg_done else [],
+            piarflow_tasks=pf_result["tasks"] if pf_pending else [],
+            subgram_sponsors=sg_sponsors if sg_pending else [],
+            tgrass_url=tgrass_url,
         )
-        await callback.message.answer(
-            pe("📢 <b>Подпишитесь на каналы ниже и нажмите «Я подписался».</b>"),
-            reply_markup=bh_kb,
+        try:
+            await callback.message.edit_reply_markup(reply_markup=wall_kb)
+        except Exception:
+            pass
+        logger.info(
+            "CombinedWall: user %s still blocked (tg=%s, sg=%s, pf=%s, bh=%s, fl=%s)",
+            user_id, bool(tgrass_url), sg_pending, pf_pending, bh_pending, flyer_pending,
         )
-        logger.info("CombinedWall: user %s sent to BotoHub wall (stage 3)", user_id)
         return
 
-    # All stages passed — referral reward + GramAds + main menu
+    # All passed — referral reward + GramAds + main menu
     db_user = await session.get(User, user_id)
     if db_user and db_user.referral_reward_pending:
         await grant_referral_reward_if_pending(db_user, session, callback.bot)

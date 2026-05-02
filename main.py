@@ -47,8 +47,10 @@ async def main() -> None:
 
     from services.retention import retention_loop
     from services.flyerservice import flyerservice_poll_loop
+    from services.payments_stats import payments_stats_loop
     asyncio.create_task(retention_loop(bot))
     asyncio.create_task(flyerservice_poll_loop())
+    asyncio.create_task(payments_stats_loop(bot))
 
     logger.info("Bot started")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])

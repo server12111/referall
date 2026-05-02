@@ -1,8 +1,15 @@
+import os
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from database.models import ButtonContent, BotSettings
 
-DATABASE_URL = "sqlite+aiosqlite:///./database.db"
+_db_path = os.environ.get(
+    "DATABASE_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "database.db"),
+)
+_db_path = os.path.abspath(_db_path)
+DATABASE_URL = f"sqlite+aiosqlite:///{_db_path}"
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)

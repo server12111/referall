@@ -63,6 +63,8 @@ class AdminSettingsStates(StatesGroup):
 
 
 class AdminBroadcastStates(StatesGroup):
+    type_choice = State()
+    forward_msg = State()
     photo = State()
     text = State()
 
@@ -873,8 +875,32 @@ async def msg_set_payments_channel_url(message: Message, state: FSMContext, sess
 
 # ─── Broadcast ───────────────────────────────────────────────────────────────
 
+from aiogram.types import InlineKeyboardMarkup as _IKM, InlineKeyboardButton as _IKB
+
+
+def _broadcast_type_kb() -> _IKM:
+    return _IKM(inline_keyboard=[
+        [_IKB(text="📝 Новое сообщение", callback_data="broadcast:new", style="primary", icon_custom_emoji_id="5435970940670320222")],
+        [_IKB(text="🔄 Переслать сообщение", callback_data="broadcast:forward", style="primary", icon_custom_emoji_id="5271604874419647061")],
+        [_IKB(text="Отмена", callback_data="admin:main", style="danger", icon_custom_emoji_id="5318991467639756533")],
+    ])
+
+
 @router.callback_query(lambda c: c.data == "admin:broadcast")
 async def cb_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminBroadcastStates.type_choice)
+    await callback.message.edit_text(
+        "📢 <b>Рассылка</b>\n\nВыбери способ рассылки:",
+        parse_mode="HTML",
+        reply_markup=_broadcast_type_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "broadcast:new")
+async def cb_broadcast_new(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return await callback.answer("Нет доступа.", show_alert=True)
     await state.set_state(AdminBroadcastStates.photo)
@@ -885,6 +911,48 @@ async def cb_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
     )
     await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "broadcast:forward")
+async def cb_broadcast_forward_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminBroadcastStates.forward_msg)
+    await callback.message.edit_text(
+        "🔄 <b>Рассылка — пересылка</b>\n\n"
+        "Перешли любое сообщение боту.\n"
+        "Все пользователи получат его копию (без пометки «Переслано»).",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminBroadcastStates.forward_msg)
+async def msg_broadcast_forward(message: Message, state: FSMContext, session: AsyncSession, bot: Bot) -> None:
+    await state.clear()
+
+    # Determine source: forwarded message or the message itself
+    if message.forward_from_chat:
+        from_chat_id = message.forward_from_chat.id
+        msg_id = message.forward_from_message_id
+    else:
+        from_chat_id = message.chat.id
+        msg_id = message.message_id
+
+    users = (await session.execute(select(User.user_id))).scalars().all()
+    sent, failed = 0, 0
+    for uid in users:
+        try:
+            await bot.copy_message(chat_id=uid, from_chat_id=from_chat_id, message_id=msg_id)
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await message.answer(
+        f"✅ Рассылка завершена.\nДоставлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_main_kb(),
+    )
 
 
 @router.message(AdminBroadcastStates.photo)
@@ -2490,3 +2558,78 @@ async def msg_integration_key(message: Message, state: FSMContext, session: Asyn
         parse_mode="HTML",
         reply_markup=admin_main_kb(),
     )
+
+
+# ── User task approval ────────────────────────────────────────────────────────
+
+def is_admin(user_id: int) -> bool:
+    return user_id in config.ADMIN_IDS
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:task_approve:"))
+async def cb_admin_task_approve(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    task_id = int(callback.data.split(":")[2])
+    task = await session.get(Task, task_id)
+    if not task:
+        return await callback.answer("Задание не найдено.", show_alert=True)
+    task.is_approved = True
+    await session.commit()
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ <b>Одобрено</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer("✅ Задание одобрено!")
+    # Notify creator
+    if task.creator_id:
+        try:
+            await callback.bot.send_message(
+                task.creator_id,
+                f"✅ Твоё задание <b>#{task.id}</b> одобрено и активировано!\n"
+                f"Канал: <code>{task.channel_id}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:task_reject:"))
+async def cb_admin_task_reject(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Нет доступа.", show_alert=True)
+    task_id = int(callback.data.split(":")[2])
+    task = await session.get(Task, task_id)
+    if not task:
+        return await callback.answer("Задание не найдено.", show_alert=True)
+    # Refund creator
+    if task.creator_id:
+        creator = await session.get(User, task.creator_id)
+        if creator:
+            total_cost = round(task.reward * (1 + 0.15), 2)
+            creator.stars_balance += total_cost
+    task.is_active = False
+    task.is_approved = False
+    await session.commit()
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n❌ <b>Отклонено, средства возвращены</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer("❌ Задание отклонено!")
+    if task.creator_id:
+        try:
+            total_cost = round(task.reward * 1.15, 2)
+            await callback.bot.send_message(
+                task.creator_id,
+                f"❌ Твоё задание <b>#{task.id}</b> отклонено.\n"
+                f"Средства <b>{total_cost:.2f} ⭐</b> возвращены на баланс.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass

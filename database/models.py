@@ -79,6 +79,10 @@ class Task(Base):
     target_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # User-created task fields
+    creator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    creator_reward_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class TaskCompletion(Base):
