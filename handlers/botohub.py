@@ -11,7 +11,6 @@ from keyboards.botohub import build_botohub_wall_kb, build_combined_wall_kb
 from keyboards.main import main_menu_kb
 from services.referral import grant_referral_reward_if_pending
 from services.subgram import get_subgram_sponsors
-from services.gramads import show_gramads
 from services.botohub_views import show_botohub_views
 from utils.botohub_api import check_botohub
 from utils.emoji import pe
@@ -30,7 +29,6 @@ async def cb_botohub_check(callback: CallbackQuery, session: AsyncSession) -> No
         if db_user and db_user.referral_reward_pending:
             await grant_referral_reward_if_pending(db_user, session, callback.bot)
 
-        asyncio.create_task(show_gramads(callback.from_user.id))
         asyncio.create_task(show_botohub_views(callback.from_user.id))
 
         default_text = (
@@ -123,7 +121,6 @@ async def cb_combined_wall_check(callback: CallbackQuery, session: AsyncSession)
     if db_user and db_user.referral_reward_pending:
         await grant_referral_reward_if_pending(db_user, session, callback.bot)
 
-    asyncio.create_task(show_gramads(user_id))
     asyncio.create_task(show_botohub_views(user_id))
 
     default_text = (

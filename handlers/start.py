@@ -14,7 +14,6 @@ from config import config
 from services.referral import grant_referral_reward_if_pending, notify_referrer_joined
 from services.subgram import get_subgram_sponsors
 from services.tgrass import check_tgrass_subscription, get_tgrass_wall_url
-from services.gramads import show_gramads
 from services.botohub_views import show_botohub_views
 from utils.botohub_api import check_botohub
 from utils.emoji import pe
@@ -131,7 +130,6 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
 
     # User passed subscription wall — give referral reward + show ads
     await grant_referral_reward_if_pending(user, session, message.bot)
-    asyncio.create_task(show_gramads(message.from_user.id))
     asyncio.create_task(show_botohub_views(message.from_user.id, hi=True))
 
     default_text = pe(
